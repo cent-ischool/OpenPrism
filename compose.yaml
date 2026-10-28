@@ -1,5 +1,5 @@
-# Local data services for OpenPrism. Run from the repo root:
-#   npm run infra:up && npm run infra:init
+# Local data services for OpenPrism. From the repo root:
+#   docker compose up -d --wait && deploy/garage-init.sh
 # The api / worker services are added in Phase 2+ of the cloud migration plan.
 name: openprism
 
@@ -42,7 +42,7 @@ services:
       - "3900:3900" # S3 API
       - "3903:3903" # admin API
     volumes:
-      - ./garage.toml:/etc/garage.toml:ro
+      - ./deploy/garage.toml:/etc/garage.toml:ro
       - garage-meta:/var/lib/garage/meta
       - garage-data:/var/lib/garage/data
     healthcheck:

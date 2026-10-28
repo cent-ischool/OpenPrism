@@ -11,10 +11,6 @@
     "dev:frontend": "npm --workspace apps/frontend run dev",
     "build": "npm --workspace apps/frontend run build",
     "preview": "npm --workspace apps/frontend run preview",
-    "infra:up": "docker compose -f deploy/compose/docker-compose.yml up -d --wait",
-    "infra:init": "bash deploy/compose/garage-init.sh",
-    "infra:down": "docker compose -f deploy/compose/docker-compose.yml down",
-    "infra:logs": "docker compose -f deploy/compose/docker-compose.yml logs -f",
     "tunnel": "npm run build && cross-env OPENPRISM_TUNNEL=localtunnel node apps/backend/src/index.js",
     "tunnel:cf": "npm run build && cross-env OPENPRISM_TUNNEL=cloudflared node apps/backend/src/index.js",
     "tunnel:ngrok": "npm run build && cross-env OPENPRISM_TUNNEL=ngrok node apps/backend/src/index.js"

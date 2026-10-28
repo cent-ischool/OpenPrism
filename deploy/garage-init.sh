@@ -3,13 +3,13 @@
 # S3 access key. Reads S3_* values from the repo-root .env (or the defaults below).
 set -euo pipefail
 
-cd "$(dirname "$0")/../.."
+cd "$(dirname "$0")/.."
 [ -f .env ] && set -a && . ./.env && set +a
 
 BUCKET="${S3_BUCKET:-openprism}"
 KEY_ID="${S3_ACCESS_KEY_ID:-GK000000000000000000000001}"
 SECRET="${S3_SECRET_ACCESS_KEY:-0000000000000000000000000000000000000000000000000000000000000001}"
-DC=(docker compose -f deploy/compose/docker-compose.yml)
+DC=(docker compose)
 garage() { "${DC[@]}" exec -T garage /garage "$@"; }
 
 if ! garage layout show 2>/dev/null | grep -q "dc1"; then
