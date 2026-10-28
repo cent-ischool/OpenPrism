@@ -40,6 +40,12 @@ def _assert_can_create(project, path):
         raise IsADirectoryError(f'{path} is a directory')
 
 
+def _drop_collab_state(project, path):
+    from collab.models import CollabDoc  # imported lazily: collab depends on this module
+    CollabDoc.objects.filter(project=project, path=path).delete()
+    CollabDoc.objects.filter(project=project, path__startswith=path + '/').delete()
+
+
 def write_text(project, path, content):
     path = safe_path(path)
     _assert_can_create(project, path)
@@ -133,6 +139,7 @@ def delete(project, path):
     keys = [r.s3_key for r in rows if r.s3_key]
     with transaction.atomic():
         _subtree(project, path).delete()
+        _drop_collab_state(project, path)
         _touch(project)
     storage.delete_keys(keys)
 
@@ -150,6 +157,7 @@ def rename(project, src, dst):
         for row in rows:
             row.path = dst + row.path[len(src):]
             row.save(update_fields=['path', 'updated_at'])
+        _drop_collab_state(project, src)  # live rooms for the old path are stale; the new path reseeds from the file
         _touch(project)
 
 

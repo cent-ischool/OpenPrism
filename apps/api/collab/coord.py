@@ -1,0 +1,43 @@
+"""Redis key names and the small cross-replica protocol, shared by rooms (async) and views (sync)."""
+import hashlib
+import time
+
+KIND_UPDATE, KIND_AWARENESS, KIND_FLUSH, KIND_SYNC = b'U', b'A', b'F', b'S'
+ORIGIN_LEN = 16
+HOLDER_FRESH_SECONDS = 90
+
+
+def room_key(project_id, path):
+    return f'{project_id}:{path}'
+
+
+def _h(key):
+    return hashlib.sha1(key.encode()).hexdigest()
+
+
+def channel(key):
+    return f'collab:room:{_h(key)}'
+
+
+def holders_key(key):
+    return f'collab:holders:{_h(key)}'  # zset: replica id -> last heartbeat
+
+
+def conns_key(key):
+    return f'collab:conns:{_h(key)}'  # hash: replica id -> connection count
+
+
+def error_key(key):
+    return f'collab:error:{_h(key)}'
+
+
+def pack(kind, origin, payload=b''):
+    return kind + origin + payload
+
+
+def unpack(message):
+    return message[:1], message[1:1 + ORIGIN_LEN], message[1 + ORIGIN_LEN:]
+
+
+def fresh_since():
+    return time.time() - HOLDER_FRESH_SECONDS

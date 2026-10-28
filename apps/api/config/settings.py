@@ -34,6 +34,7 @@ INSTALLED_APPS = [
     'django.contrib.contenttypes',
     'django.contrib.sessions',
     'django.contrib.messages',
+    'channels',
     'rest_framework',
     'accounts',
     'projects',
@@ -79,7 +80,8 @@ def _database():
         'PASSWORD': unquote(url.password or ''),
         'HOST': url.hostname,
         'PORT': url.port or 5432,
-        'CONN_MAX_AGE': 60,
+        # Tests: close connections after every call so collab's worker-thread connections don't block DROP DATABASE.
+        'CONN_MAX_AGE': 0 if TESTING else 60,
     }
 
 
@@ -104,8 +106,11 @@ FILE_UPLOAD_MAX_MEMORY_SIZE = 10 * 1024 * 1024
 FILE_UPLOAD_HANDLERS = ['common.uploads.PathMemoryHandler', 'common.uploads.PathTemporaryHandler']
 
 REST_FRAMEWORK = {
-    'DEFAULT_AUTHENTICATION_CLASSES': ['rest_framework_simplejwt.authentication.JWTAuthentication'],
-    'DEFAULT_PERMISSION_CLASSES': ['rest_framework.permissions.IsAuthenticated'],
+    'DEFAULT_AUTHENTICATION_CLASSES': [
+        'collab.auth.InviteAuthentication',  # `Bearer op2.…` invite tokens (project-scoped guests)
+        'rest_framework_simplejwt.authentication.JWTAuthentication',
+    ],
+    'DEFAULT_PERMISSION_CLASSES': ['collab.auth.IsRealUser'],  # guests only reach views that opt in
     'DEFAULT_PARSER_CLASSES': [
         'rest_framework.parsers.JSONParser',
         'common.uploads.PathMultiPartParser',
@@ -136,11 +141,16 @@ CELERY_TASK_ROUTES = {
 CELERY_BEAT_SCHEDULE = {
     'reap-stale-jobs': {'task': 'jobs.tasks.reap_stale_jobs', 'schedule': 60.0},
     'cleanup-old-jobs': {'task': 'jobs.tasks.cleanup_old_jobs', 'schedule': 3600.0},
+    'cleanup-expired-invites': {'task': 'collab.tasks.cleanup_expired_invites', 'schedule': 3600.0},
 }
 
 LLM_TIMEOUT_SECONDS = int(env('LLM_TIMEOUT_SECONDS', '180'))
 LLM_ALLOW_PRIVATE_ENDPOINTS = env_bool('LLM_ALLOW_PRIVATE_ENDPOINTS', False)  # true only for local models in dev
 AI_WAIT_SECONDS = int(env('AI_WAIT_SECONDS', '300'))  # how long an AI endpoint blocks waiting for its worker
+COLLAB_FLUSH_DEBOUNCE_MS = int(env('OPENPRISM_COLLAB_FLUSH_DEBOUNCE_MS', '800'))
+COLLAB_INVITE_TTL_SECONDS = int(env('OPENPRISM_COLLAB_TOKEN_TTL', '86400'))
+COLLAB_ROOM_EVICT_SECONDS = float(env('COLLAB_ROOM_EVICT_SECONDS', '60'))  # keep an idle room this long
+COLLAB_SYNC_INTERVAL_SECONDS = float(env('COLLAB_SYNC_INTERVAL_SECONDS', '30'))  # anti-entropy merge with the DB
 JOB_SECRET_TTL_SECONDS = int(env('JOB_SECRET_TTL_SECONDS', str(6 * 3600)))  # how long a transfer job may keep its API key
 MINERU_API_BASE = env('OPENPRISM_MINERU_API_BASE', 'https://mineru.net/api/v4')
 MINERU_TOKEN = env('OPENPRISM_MINERU_TOKEN', '')

@@ -1,10 +1,11 @@
 from django.http import HttpResponse
 from django.shortcuts import get_object_or_404
-from rest_framework.decorators import api_view, authentication_classes
+from rest_framework.decorators import api_view, authentication_classes, permission_classes
 from rest_framework.exceptions import NotFound
 from rest_framework.response import Response
 
 from projects import storage
+from collab.auth import IsUserOrGuest
 from projects.access import QueryTokenJWTAuthentication, get_project
 from projects.models import Membership
 from projects.paths import InvalidPath, safe_path
@@ -22,8 +23,11 @@ def fail(message, status=200):
 
 def get_job(request, job_id):
     job = get_object_or_404(Job.objects.select_related('project'), pk=job_id)
-    allowed = job.user_id == request.user.id or (
-        job.project_id and Membership.objects.filter(workspace_id=job.project.workspace_id, user=request.user).exists())
+    if getattr(request.user, 'is_guest', False):
+        allowed = bool(job.project_id) and str(job.project_id) == request.user.project_id
+    else:
+        allowed = job.user_id == request.user.id or (
+            job.project_id and Membership.objects.filter(workspace_id=job.project.workspace_id, user=request.user).exists())
     if not allowed:
         raise NotFound('Job not found')
     return job
@@ -47,6 +51,7 @@ def job_json(job):
 
 
 @api_view(['POST'])
+@permission_classes([IsUserOrGuest])
 def start_compile(request):
     """Queue a compilation. Poll GET /api/jobs/<jobId>, then fetch the PDF from result.pdfUrl."""
     project_id = request.data.get('projectId')
@@ -63,22 +68,27 @@ def start_compile(request):
         return fail('Invalid main file path.')
     if not project.files.filter(path=main_file).exclude(kind='dir').exists():
         return fail(f'Main file not found: {main_file}')
-    active = Job.objects.filter(user=request.user, type=Job.COMPILE, status__in=ACTIVE).count()
-    if active >= MAX_ACTIVE_COMPILES_PER_USER:
+    guest = getattr(request.user, 'is_guest', False)
+    owner = None if guest else request.user  # guests have no account; limit them per project instead
+    active = Job.objects.filter(user=owner, project=project if guest else None, type=Job.COMPILE, status__in=ACTIVE) \
+        if guest else Job.objects.filter(user=owner, type=Job.COMPILE, status__in=ACTIVE)
+    if active.count() >= MAX_ACTIVE_COMPILES_PER_USER:
         return fail('Too many compilations in progress. Wait for one to finish.', 429)
-    job = Job.objects.create(type=Job.COMPILE, user=request.user, project=project,
+    job = Job.objects.create(type=Job.COMPILE, user=owner, project=project,
                              params={'mainFile': main_file, 'engine': engine}, progress_log=['Queued'])
     compile_project.delay(str(job.id))
     return Response({'ok': True, 'jobId': str(job.id), 'status': job.status})
 
 
 @api_view(['GET'])
+@permission_classes([IsUserOrGuest])
 def job_status(request, pk):
     return Response(job_json(get_job(request, pk)))
 
 
 @api_view(['GET'])
 @authentication_classes([QueryTokenJWTAuthentication])
+@permission_classes([IsUserOrGuest])
 def job_pdf(request, pk):
     job = get_job(request, pk)
     key = job.result.get('pdfKey')

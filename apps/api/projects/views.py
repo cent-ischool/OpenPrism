@@ -8,13 +8,14 @@ from datetime import timezone as dt_timezone
 from django.db import transaction
 from django.http import HttpResponse, StreamingHttpResponse
 from django.utils import timezone
-from rest_framework.decorators import api_view, authentication_classes, parser_classes
+from rest_framework.decorators import api_view, authentication_classes, parser_classes, permission_classes
 from rest_framework.exceptions import NotFound, ParseError
 from rest_framework.parsers import JSONParser
 from rest_framework.response import Response
 
 from ai import arxiv
 from ai.i18n import get_lang
+from collab.auth import IsUserOrGuest
 from common.uploads import PathMultiPartParser, upload_path
 from common.zips import iter_zip_files
 from jobs.models import Job
@@ -189,12 +190,14 @@ def project_trash(request, pk):
 # ---- files ------------------------------------------------------------------------------------
 
 @api_view(['GET'])
+@permission_classes([IsUserOrGuest])
 def tree(request, pk):
     project = get_project(request, pk)
     return Response({'items': pfiles.list_tree(project), 'fileOrder': project.file_order})
 
 
 @api_view(['POST'])
+@permission_classes([IsUserOrGuest])
 def file_order(request, pk):
     project = get_project(request, pk, write=True)
     order = request.data.get('order')
@@ -206,6 +209,7 @@ def file_order(request, pk):
 
 
 @api_view(['GET', 'PUT', 'DELETE'])
+@permission_classes([IsUserOrGuest])
 def file_item(request, pk):
     if request.method == 'PUT':
         project = get_project(request, pk, write=True)
@@ -245,6 +249,7 @@ def file_item(request, pk):
 
 @api_view(['GET'])
 @authentication_classes([QueryTokenJWTAuthentication])
+@permission_classes([IsUserOrGuest])
 def blob(request, pk):
     project = get_project(request, pk)
     raw = request.query_params.get('path')
@@ -268,6 +273,7 @@ def blob(request, pk):
 
 @api_view(['POST'])
 @parser_classes([PathMultiPartParser])
+@permission_classes([IsUserOrGuest])
 def upload(request, pk):
     project = get_project(request, pk, write=True)
     saved = []
@@ -284,6 +290,7 @@ def upload(request, pk):
 
 
 @api_view(['GET'])
+@permission_classes([IsUserOrGuest])
 def all_files(request, pk):
     """Whole project inline. Heavy; kept because the editor loads it for compile and search."""
     project = get_project(request, pk)
@@ -298,6 +305,7 @@ def all_files(request, pk):
 
 
 @api_view(['POST'])
+@permission_classes([IsUserOrGuest])
 def create_folder(request, pk):
     project = get_project(request, pk, write=True)
     raw = request.data.get('path')
@@ -311,6 +319,7 @@ def create_folder(request, pk):
 
 
 @api_view(['POST'])
+@permission_classes([IsUserOrGuest])
 def rename_path(request, pk):
     project = get_project(request, pk, write=True)
     src, dst = request.data.get('from'), request.data.get('to')
