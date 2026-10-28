@@ -1,4 +1,4 @@
-# Stages: `api` (also used by beat and the future AI worker) and `tex` (adds TeX Live for compile workers).
+# Stages: `api` (also used by beat), `tex` (adds TeX Live for compile workers) and `ai` (adds matplotlib/pandas for plots).
 FROM python:3.12-slim AS base
 
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
@@ -20,6 +20,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 USER app
 CMD ["celery", "-A", "config", "worker", "-Q", "compile", "-l", "info", "--concurrency", "2"]
+
+
+FROM base AS ai
+USER root
+COPY requirements-ai.txt .
+RUN pip install --no-cache-dir -r requirements-ai.txt
+USER app
+CMD ["celery", "-A", "config", "worker", "-Q", "ai,transfer,import", "-l", "info", "--concurrency", "4"]
 
 
 FROM base AS api

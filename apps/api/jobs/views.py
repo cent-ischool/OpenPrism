@@ -41,6 +41,8 @@ def job_json(job):
             'log': r.get('log', ''), 'status': r.get('exitStatus'), 'engine': r.get('engine'), 'mainFile': r.get('mainFile'),
             'pdfUrl': f'/api/jobs/{job.id}/pdf' if r.get('pdfKey') else None,
         }
+    if job.status not in ACTIVE and job.type != Job.COMPILE:
+        out['result'] = job.result.get('body')  # the endpoint's response body; never contains secrets
     return out
 
 

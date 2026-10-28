@@ -39,6 +39,7 @@ INSTALLED_APPS = [
     'projects',
     'templates_app',
     'jobs',
+    'ai',
     'collab',
     'common',
 ]
@@ -127,12 +128,17 @@ CELERY_BROKER_CONNECTION_RETRY_ON_STARTUP = True
 CELERY_BROKER_TRANSPORT_OPTIONS = {'visibility_timeout': 900}  # must exceed the longest task time_limit
 CELERY_TASK_ROUTES = {
     'jobs.tasks.compile_*': {'queue': 'compile'},
+    'ai.tasks.*': {'queue': 'ai'},
 }
 CELERY_BEAT_SCHEDULE = {
     'reap-stale-jobs': {'task': 'jobs.tasks.reap_stale_jobs', 'schedule': 60.0},
     'cleanup-old-jobs': {'task': 'jobs.tasks.cleanup_old_jobs', 'schedule': 3600.0},
 }
 
+LLM_TIMEOUT_SECONDS = int(env('LLM_TIMEOUT_SECONDS', '180'))
+LLM_ALLOW_PRIVATE_ENDPOINTS = env_bool('LLM_ALLOW_PRIVATE_ENDPOINTS', False)  # true only for local models in dev
+AI_WAIT_SECONDS = int(env('AI_WAIT_SECONDS', '300'))  # how long an AI endpoint blocks waiting for its worker
+PLOT_TIMEOUT_SECONDS = int(env('PLOT_TIMEOUT_SECONDS', '60'))
 COMPILE_TIMEOUT_SECONDS = int(env('COMPILE_TIMEOUT_SECONDS', '120'))  # per command (each pass / bibtex)
 COMPILE_MAX_FILE_BYTES = int(env('COMPILE_MAX_FILE_BYTES', str(200 * 1024 * 1024)))
 JOB_RUNNING_STALE_MINUTES = int(env('JOB_RUNNING_STALE_MINUTES', '10'))

@@ -1,6 +1,6 @@
 # Local data services for OpenPrism. From the repo root:
 #   docker compose up -d --wait && deploy/garage-init.sh
-# worker-ai (Celery queues ai/transfer/import) is added in Phase 5.
+# worker-ai handles queues ai/transfer/import (LLM, vision, plot, agent; MinerU + transfer in Phase 5b).
 name: openprism
 
 services:
@@ -89,6 +89,29 @@ services:
   worker-tex:
     build: {context: ./apps/api, target: tex}
     environment: *api-env
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+      garage: {condition: service_healthy}
+    volumes:
+      - ./apps/api:/app
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A config inspect ping -d celery@$$HOSTNAME"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 20s
+
+  # AI worker: calls LLM providers and runs LLM-generated plotting code, so it gets no TeX and should get no
+  # extra secrets. After editing Python code, `docker compose restart worker-ai`.
+  worker-ai:
+    build: {context: ./apps/api, target: ai}
+    environment:
+      <<: *api-env
+      LLM_ALLOW_PRIVATE_ENDPOINTS: ${LLM_ALLOW_PRIVATE_ENDPOINTS:-0} # 1 to use a local model (Ollama, vLLM)
+      OPENPRISM_LLM_ENDPOINT: ${OPENPRISM_LLM_ENDPOINT:-}
+      OPENPRISM_LLM_API_KEY: ${OPENPRISM_LLM_API_KEY:-}
+      OPENPRISM_LLM_MODEL: ${OPENPRISM_LLM_MODEL:-}
     depends_on:
       postgres: {condition: service_healthy}
       redis: {condition: service_healthy}
