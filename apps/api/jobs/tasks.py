@@ -1,0 +1,81 @@
+import logging
+from datetime import timedelta
+
+from celery import shared_task
+from celery.exceptions import SoftTimeLimitExceeded
+from django.conf import settings
+from django.utils import timezone
+
+from projects import storage
+
+from . import compile as tex
+from .models import Job
+
+log = logging.getLogger(__name__)
+ACTIVE = (Job.QUEUED, Job.RUNNING)
+
+
+def add_progress(job, message):
+    job.progress_log = [*job.progress_log, message]
+    job.save(update_fields=['progress_log', 'updated_at'])  # updated_at doubles as the heartbeat
+
+
+def finish(job, status, error='', result=None):
+    job.status, job.error = status, error
+    if result:
+        job.result = {**job.result, **result}
+    job.save(update_fields=['status', 'error', 'result', 'updated_at'])
+
+
+@shared_task(name='jobs.tasks.compile_project', soft_time_limit=300, time_limit=330)
+def compile_project(job_id):
+    try:
+        job = Job.objects.select_related('project').get(pk=job_id)
+    except Job.DoesNotExist:
+        return
+    if job.status not in ACTIVE:
+        return  # redelivered after it already finished or was reaped
+    job.status = Job.RUNNING
+    job.save(update_fields=['status', 'updated_at'])
+    params = job.params
+    try:
+        out = tex.compile_project(
+            job.project, params['mainFile'], params['engine'], progress=lambda m: add_progress(job, m))
+    except tex.CompileError as exc:
+        return finish(job, Job.FAILED, str(exc))
+    except SoftTimeLimitExceeded:
+        return finish(job, Job.FAILED, 'Compilation timed out.')
+    except Exception as exc:
+        log.exception('compile job %s crashed', job_id)
+        return finish(job, Job.FAILED, f'Compilation failed: {exc}')
+
+    result = {'log': out['log'], 'exitStatus': out['status'], 'engine': params['engine'], 'mainFile': params['mainFile']}
+    if not out['pdf']:
+        return finish(job, Job.FAILED, 'No PDF generated.', result)
+    key = f'jobs/{job.id}/output.pdf'
+    storage.put_bytes(key, out['pdf'], 'application/pdf')
+    finish(job, Job.SUCCESS, '', {**result, 'pdfKey': key, 'pdfSize': len(out['pdf'])})
+
+
+@shared_task(name='jobs.tasks.reap_stale_jobs')
+def reap_stale_jobs():
+    """Fail jobs whose worker died (no heartbeat) or that never got picked up."""
+    now = timezone.now()
+    running = Job.objects.filter(status=Job.RUNNING, updated_at__lt=now - timedelta(minutes=settings.JOB_RUNNING_STALE_MINUTES))
+    queued = Job.objects.filter(status=Job.QUEUED, updated_at__lt=now - timedelta(minutes=settings.JOB_QUEUED_STALE_MINUTES))
+    count = running.update(status=Job.FAILED, error='Job timed out (worker stopped responding).', updated_at=now)
+    count += queued.update(status=Job.FAILED, error='Job was never started (queue backlog or lost message).', updated_at=now)
+    return count
+
+
+@shared_task(name='jobs.tasks.cleanup_old_jobs')
+def cleanup_old_jobs():
+    """Delete finished jobs (and their stored output) older than JOB_RETENTION_HOURS."""
+    cutoff = timezone.now() - timedelta(hours=settings.JOB_RETENTION_HOURS)
+    old = Job.objects.exclude(status__in=ACTIVE).filter(updated_at__lt=cutoff)
+    n = 0
+    for job in old.iterator():
+        storage.delete_prefix(f'jobs/{job.id}/')
+        job.delete()
+        n += 1
+    return n

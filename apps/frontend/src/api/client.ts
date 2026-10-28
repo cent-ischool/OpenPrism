@@ -308,18 +308,71 @@ export function runAgent(payload: {
   });
 }
 
-export function compileProject(payload: {
-  projectId: string;
-  mainFile: string;
-  engine: 'pdflatex' | 'xelatex' | 'lualatex' | 'latexmk' | 'tectonic';
-}) {
-  return request<{ ok: boolean; pdf?: string; log?: string; status?: number; engine?: string; error?: string }>(
-    `/api/compile`,
-    {
-      method: 'POST',
-      body: JSON.stringify(payload)
+type CompileResult = { ok: boolean; pdf?: string; log?: string; status?: number; engine?: string; error?: string };
+type JobStatus = {
+  status: 'queued' | 'running' | 'waiting_images' | 'success' | 'failed';
+  progressLog: string[];
+  error: string;
+  result?: { log: string; status: number | null; engine: string; mainFile: string; pdfUrl: string | null };
+};
+
+const COMPILE_POLL_INTERVAL_MS = 1000;
+const COMPILE_POLL_TIMEOUT_MS = 10 * 60 * 1000;
+
+function bytesToBase64(buffer: ArrayBuffer): string {
+  const bytes = new Uint8Array(buffer);
+  let binary = '';
+  for (let i = 0; i < bytes.length; i += 0x8000) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  }
+  return btoa(binary);
+}
+
+/**
+ * Compile a project. The Node backend answers with the finished PDF; the Django API queues a job, so
+ * this polls it (reporting progress messages) and then downloads the PDF. Both resolve to the same shape.
+ */
+export async function compileProject(
+  payload: {
+    projectId: string;
+    mainFile: string;
+    engine: 'pdflatex' | 'xelatex' | 'lualatex' | 'latexmk' | 'tectonic';
+  },
+  onProgress?: (message: string) => void
+): Promise<CompileResult> {
+  const first = await request<CompileResult & { jobId?: string }>(`/api/compile`, {
+    method: 'POST',
+    body: JSON.stringify(payload)
+  });
+  if (!first.jobId) return first;
+
+  const deadline = Date.now() + COMPILE_POLL_TIMEOUT_MS;
+  let reported = 0;
+  for (;;) {
+    const job = await request<JobStatus>(`/api/jobs/${first.jobId}`);
+    if (onProgress && job.progressLog.length > reported) {
+      reported = job.progressLog.length;
+      onProgress(job.progressLog[reported - 1]);
     }
-  );
+    if (job.status === 'failed') {
+      return { ok: false, error: job.error, log: job.result?.log, status: job.result?.status ?? undefined, engine: job.result?.engine };
+    }
+    if (job.status === 'success') {
+      const pdfUrl = job.result?.pdfUrl;
+      if (!pdfUrl) return { ok: false, error: 'No PDF generated.', log: job.result?.log };
+      const res = await fetch(`${API_BASE}${pdfUrl}`, { headers: { 'x-lang': getLangHeader(), ...getAuthHeader() } });
+      if (!res.ok) throw new Error(await errorMessage(res));
+      return {
+        ok: true,
+        pdf: bytesToBase64(await res.arrayBuffer()),
+        log: job.result?.log,
+        status: job.result?.status ?? 0,
+        engine: job.result?.engine
+      };
+    }
+    if (Date.now() > deadline) return { ok: false, error: 'Compilation timed out.' };
+    await new Promise((resolve) => setTimeout(resolve, COMPILE_POLL_INTERVAL_MS));
+  }
 }
 
 export function listTemplates() {

@@ -12,11 +12,11 @@ The app is mid-migration from a single Node/Fastify process (no database, state 
 
 | | Node backend (`apps/backend`, port 8787) | Django API (`apps/api`, port 8000) |
 |---|---|---|
-| Status | **Live** — the only backend the frontend can use today | Phases 1–3 done: models, JWT auth, S3-backed file service, projects/files/templates REST, legacy importer |
+| Status | **Live** — the only backend the frontend can use today | Phases 1–4 done: models, JWT auth, S3-backed file service, projects/files/templates REST, legacy importer, Celery + async LaTeX compile |
 | State | Directories under `OPENPRISM_DATA_DIR` | Postgres (text files, metadata) + Garage (binaries, PDFs, templates) |
 | Auth | Localhost trust + HMAC collab token | Real users, workspaces, roles, JWT |
 
-The frontend has **no login UI yet**, so it cannot talk to the Django API end to end; Vite proxies `/api` to `OPENPRISM_API_URL` (default `http://localhost:8787`). Remaining work, in order: **4** Celery workers + LaTeX compile as an async job (and the polling change in `EditorPage.tsx`), **5** AI features (llm/vision/plot/agent/arXiv/MinerU/template transfer) rewritten in Python with a Postgres LangGraph checkpointer, **6** real-time collab on Django Channels (pycrdt-websocket, same y-websocket wire protocol), **7** cutover (nginx `web` image, delete `apps/backend`, frontend login), **8** k8s manifests in `deploy/k8s`. Phases 4–8 are not started; do not assume their endpoints exist (`/api/compile`, `/api/llm`, `/api/transfer/*`, `/api/collab` are Node-only for now).
+The frontend has **no login UI yet**, so it cannot talk to the Django API end to end; Vite proxies `/api` to `OPENPRISM_API_URL` (default `http://localhost:8787`). Remaining work, in order: **5** AI features (llm/vision/plot/agent/arXiv/MinerU/template transfer) rewritten in Python with a Postgres LangGraph checkpointer, **6** real-time collab on Django Channels (pycrdt-websocket, same y-websocket wire protocol), **7** cutover (nginx `web` image, delete `apps/backend`, frontend login), **8** k8s manifests in `deploy/k8s`. Phases 5–8 are not started; do not assume their endpoints exist (`/api/llm`, `/api/vision`, `/api/plot`, `/api/agent`, `/api/arxiv`, `/api/transfer/*`, `/api/collab` are Node-only for now).
 
 ## Running the project
 
@@ -31,11 +31,13 @@ npm run dev                  # Vite (5173) + Node backend (8787)
 
 **Data services + Django API (compose.yaml at the repo root):**
 ```bash
-docker compose up -d --wait  # postgres, redis, garage, api (api runs `migrate`, then uvicorn --reload on :8000)
+docker compose up -d --wait  # postgres, redis, garage, api (runs `migrate`, then uvicorn --reload on :8000), worker-tex (Celery compile worker), beat
 deploy/garage-init.sh        # one-time & idempotent: Garage layout, bucket, access key (reads S3_* from .env)
 docker compose exec api python manage.py import_legacy --owner you@example.com   # optional: load templates/ and data/ (register that user first via POST /api/auth/register)
-docker compose run --rm api python manage.py test   # 38 tests against the real Postgres + Garage (needs garage-init done)
-docker compose logs -f api   # tail logs
+docker compose run --rm api python manage.py test        # API tests against the real Postgres + Garage (needs garage-init done); LaTeX tests skip here
+docker compose run --rm worker-tex python manage.py test jobs   # same, plus real pdflatex/bibtex compile tests (slow image, run when touching jobs/compile.py)
+docker compose logs -f api worker-tex   # tail logs
+docker compose restart worker-tex beat   # Celery does not auto-reload: run after editing Python used by tasks
 docker compose down          # stop; volumes kept (add -v to wipe all data)
 ```
 Quick checks: `curl localhost:8000/healthz` (liveness) and `curl localhost:8000/readyz` (Postgres + Redis + S3 reachable; 503 otherwise). The api container mounts `apps/api` live (code edits reload) and mounts `templates/` and `data/` read-only at `/legacy/` for the importer. Use plain `docker compose`, not npm wrappers.
@@ -70,16 +72,16 @@ npm workspaces monorepo: `apps/frontend` (React 18 + TypeScript + Vite), `apps/b
 |---|---|---|
 | `web` | nginx + built frontend | static SPA, proxies `/api` and WebSocket upgrades *(Phase 7)* |
 | `api` | Django + DRF, uvicorn (ASGI) | stateless REST (and later Channels collab); `/healthz`, `/readyz` — **exists** |
-| `worker-tex` | Celery, queue `compile` | image with TeX Live; CPU/mem limits, time limits *(Phase 4)* |
+| `worker-tex` | Celery, queue `compile` | image with TeX Live; per-command timeout, CPU/file-size rlimits, shell-escape off — **exists** (set container CPU/mem limits in k8s) |
 | `worker-ai` | Celery, queues `ai`/`transfer`/`import` | LLM, vision, plot (runs LLM-generated Python → must be sandboxed), agent, transfer graph, MinerU, arXiv *(Phase 5)* |
-| `beat` | Celery beat | cleanup of expired invites / stale jobs |
+| `beat` | Celery beat | reaps jobs whose worker died, deletes finished jobs after 24 h — **exists** (expired collab invites: later) |
 | `postgres`, `redis`, `garage` | | **exist** in `compose.yaml`; managed services/operators in k8s |
 
 Rules for this design: services are stateless and 12-factor (env-only config, no shared volumes — workers materialise project files into a temp dir), long operations become `Job` rows + Celery tasks the frontend polls, and nothing user-visible depends on local disk.
 
 ### Django API (`apps/api`)
 
-Apps: `accounts` (email-login `User`, register/login/refresh/me), `projects` (`Workspace`, `Membership`, `Project`, `ProjectFile`, file service, REST views), `templates_app` (`Template` + S3 template files), `jobs` (`Job` model for async work), `collab` (`CollabInvite`), `common` (health, `{ok,error}` exception handler, path-preserving multipart parser, safe zip reader). `config/` has settings, urls, asgi, and the Celery app.
+Apps: `accounts` (email-login `User`, register/login/refresh/me), `projects` (`Workspace`, `Membership`, `Project`, `ProjectFile`, file service, REST views), `templates_app` (`Template` + S3 template files), `jobs` (`Job` model, compile service + Celery tasks, job API), `collab` (`CollabInvite`), `common` (health, `{ok,error}` exception handler, path-preserving multipart parser, safe zip reader). `config/` has settings, urls, asgi, and the Celery app.
 
 **Data model.** `Project` mirrors the old `project.json` (name, tags, archived, trashed/trashed_at, `file_order` JSON) and belongs to a `Workspace`; users reach projects through `Membership` roles (`owner`/`admin`/`editor` can write, `viewer` read-only). Registering creates a personal workspace. A user who is not a member gets **404, not 403**, to avoid revealing project existence.
 
@@ -92,7 +94,11 @@ Apps: `accounts` (email-login `User`, register/login/refresh/me), `projects` (`W
 - Folder uploads send relative paths in the multipart *filename* (`form.append('files', file, 'figs/a.png')`). Django normally strips this to a basename; `common/uploads.py` preserves the sanitised path as `file.full_path` — read it with `upload_path()`. In tests build such bodies by hand (the Django test client strips paths too; see `multipart()` in `projects/test_api.py`).
 - Settings parse `DATABASE_URL` themselves (no django-environ); keep new config in `settings.py` via `env()` / `env_bool()`.
 
-**Gotchas.** `garage-init.sh` must run once before tests or presigned/binary features fail. Presigned URLs are signed for `S3_PUBLIC_ENDPOINT_URL`, so tests fetch them through the internal endpoint with the public `Host` header. `docker compose up` runs `migrate` on every api start (fine for dev; in k8s make it a one-off Job). New dependencies go in `apps/api/requirements.txt` as exact pins, then rebuild with `docker compose build api`.
+**Async jobs (compile).** Long work is a `Job` row plus a Celery task; the API never blocks on it. `POST /api/compile {projectId, mainFile, engine}` validates, then returns `{ok, jobId}` (max 3 active compiles per user → 429). `GET /api/jobs/:id` returns `{status: queued|running|success|failed, progressLog, error, result}` (`result` = `{log, status, engine, mainFile, pdfUrl}` once finished); `GET /api/jobs/:id/pdf` streams the PDF from Garage through the API (authenticated, also accepts `?token=`), so browsers never need direct access to Garage or CORS. The `compile_project` task (`jobs/tasks.py`) runs in the `compile` queue with `acks_late`: if a worker dies the message is redelivered, so tasks must be safe to re-run (the task skips jobs already finished). `updated_at` is the heartbeat; `reap_stale_jobs` fails jobs idle >10 min running / >30 min queued. `jobs/compile.py` is a port of the Node `compileService.js`: it materialises the project (text from Postgres, binaries from S3) into a temp dir, runs engine → bibtex/biber (biber if `.aux` has `\abx@aux@` or the source uses biblatex) → 2 more passes, treats "a PDF exists" as success even if the engine exited non-zero, and always deletes the temp dir. Output is capped at 200 KB of log. `tectonic` is accepted by the API but not installed in the worker image (reports "tectonic not available"). New async features should follow this pattern: model in `jobs`, task in `jobs/tasks.py`, route to a named queue in `CELERY_TASK_ROUTES`, status via `/api/jobs/:id`.
+
+**Frontend compile contract.** `compileProject()` in `api/client.ts` works against both backends: Node answers with the finished PDF, Django returns a `jobId` which the client polls (1 s, 10 min cap) and then downloads, resolving to the same `{ok, pdf(base64), log, status}` shape and reporting progress via an optional callback (the editor shows it in the status bar).
+
+**Gotchas.** `garage-init.sh` must run once before tests or presigned/binary features fail. Presigned URLs (currently unused by the UI) are signed for `S3_PUBLIC_ENDPOINT_URL`, so tests fetch them through the internal endpoint with the public `Host` header. `docker compose up` runs `migrate` on every api start (fine for dev; in k8s make it a one-off Job). New dependencies go in `apps/api/requirements.txt` as exact pins, then rebuild with `docker compose build api`.
 
 ### Legacy Node backend and frontend
 

@@ -121,10 +121,23 @@ SIMPLE_JWT = {
 REDIS_URL = env('REDIS_URL', 'redis://localhost:6379/0')
 CELERY_BROKER_URL = env('CELERY_BROKER_URL', REDIS_URL)
 CELERY_RESULT_BACKEND = env('CELERY_RESULT_BACKEND', REDIS_URL)
-CELERY_TASK_ACKS_LATE = True
+CELERY_TASK_ACKS_LATE = True  # a task whose worker dies is redelivered; tasks must tolerate re-running
+CELERY_WORKER_PREFETCH_MULTIPLIER = 1  # long jobs: don't let one worker hoard queued tasks
+CELERY_BROKER_CONNECTION_RETRY_ON_STARTUP = True
+CELERY_BROKER_TRANSPORT_OPTIONS = {'visibility_timeout': 900}  # must exceed the longest task time_limit
 CELERY_TASK_ROUTES = {
     'jobs.tasks.compile_*': {'queue': 'compile'},
 }
+CELERY_BEAT_SCHEDULE = {
+    'reap-stale-jobs': {'task': 'jobs.tasks.reap_stale_jobs', 'schedule': 60.0},
+    'cleanup-old-jobs': {'task': 'jobs.tasks.cleanup_old_jobs', 'schedule': 3600.0},
+}
+
+COMPILE_TIMEOUT_SECONDS = int(env('COMPILE_TIMEOUT_SECONDS', '120'))  # per command (each pass / bibtex)
+COMPILE_MAX_FILE_BYTES = int(env('COMPILE_MAX_FILE_BYTES', str(200 * 1024 * 1024)))
+JOB_RUNNING_STALE_MINUTES = int(env('JOB_RUNNING_STALE_MINUTES', '10'))
+JOB_QUEUED_STALE_MINUTES = int(env('JOB_QUEUED_STALE_MINUTES', '30'))
+JOB_RETENTION_HOURS = int(env('JOB_RETENTION_HOURS', '24'))
 
 S3_ENDPOINT_URL = env('S3_ENDPOINT_URL', 'http://localhost:3900')
 # URL embedded in presigned links; must be reachable by the browser, not just containers.

@@ -22,6 +22,7 @@ from .models import Membership, Project, ProjectFile, Workspace
 from .paths import InvalidPath, safe_path
 from .tex import extract_document_body, merge_template_body
 
+INERT_TYPES = {'image/png', 'image/jpeg', 'application/pdf'}
 IGNORED_IMPORT_PATHS = ('project.json',)
 BLOB_TYPES = {
     '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.svg': 'image/svg+xml',
@@ -251,8 +252,10 @@ def blob(request, pk):
     row = project.files.get(path=path)
     ext = '.' + path.rsplit('.', 1)[-1].lower() if '.' in path.rsplit('/', 1)[-1] else ''
     resp = HttpResponse(data, content_type=BLOB_TYPES.get(ext) or row.content_type or 'application/octet-stream')
-    # User-supplied SVG/HTML must not run script in our origin.
-    resp['Content-Security-Policy'] = 'sandbox'
+    if resp['Content-Type'] not in INERT_TYPES:
+        # User-supplied SVG/HTML/unknown must not run script in our origin. (Not applied to PDFs and
+        # rasters: Chrome refuses to render a PDF served with a sandbox CSP.)
+        resp['Content-Security-Policy'] = 'sandbox'
     resp['X-Content-Type-Options'] = 'nosniff'
     return resp
 

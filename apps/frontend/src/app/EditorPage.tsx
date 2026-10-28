@@ -3365,7 +3365,7 @@ export default function EditorPage() {
       if (!fileMap[mainFile]) {
         throw new Error(t('主文件不存在: {{file}}', { file: mainFile }));
       }
-      const res = await compileProject({ projectId, mainFile, engine: compileEngine });
+      const res = await compileProject({ projectId, mainFile, engine: compileEngine }, (message) => setStatus(message));
       if (!res.ok || !res.pdf) {
         const detail = [res.error, res.log].filter(Boolean).join('\n');
         throw new Error(detail || t('后端编译失败'));

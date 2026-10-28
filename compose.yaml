@@ -1,6 +1,6 @@
 # Local data services for OpenPrism. From the repo root:
 #   docker compose up -d --wait && deploy/garage-init.sh
-# Celery workers are added in Phase 4 of the cloud migration plan.
+# worker-ai (Celery queues ai/transfer/import) is added in Phase 5.
 name: openprism
 
 services:
@@ -52,7 +52,7 @@ services:
       retries: 10
 
   api:
-    build: ./apps/api
+    build: {context: ./apps/api, target: api}
     command: >
       sh -c "python manage.py migrate --noinput &&
              uvicorn config.asgi:application --host 0.0.0.0 --port 8000 --reload"
@@ -84,6 +84,32 @@ services:
       postgres: {condition: service_healthy}
       redis: {condition: service_healthy}
       garage: {condition: service_healthy}
+
+  # Compile worker: the only image with TeX Live. After editing Python code, `docker compose restart worker-tex`.
+  worker-tex:
+    build: {context: ./apps/api, target: tex}
+    environment: *api-env
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+      garage: {condition: service_healthy}
+    volumes:
+      - ./apps/api:/app
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A config inspect ping -d celery@$$HOSTNAME"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 20s
+
+  beat:
+    build: {context: ./apps/api, target: api}
+    command: celery -A config beat -l info --schedule /tmp/celerybeat-schedule
+    environment: *api-env
+    depends_on:
+      api: {condition: service_healthy}
+    volumes:
+      - ./apps/api:/app
 
 volumes:
   postgres-data:
