@@ -99,10 +99,15 @@ STATIC_URL = '/static/'
 # Uploads up to 200 MB, as the Node backend allowed.
 DATA_UPLOAD_MAX_MEMORY_SIZE = 200 * 1024 * 1024
 FILE_UPLOAD_MAX_MEMORY_SIZE = 10 * 1024 * 1024
+FILE_UPLOAD_HANDLERS = ['common.uploads.PathMemoryHandler', 'common.uploads.PathTemporaryHandler']
 
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': ['rest_framework_simplejwt.authentication.JWTAuthentication'],
     'DEFAULT_PERMISSION_CLASSES': ['rest_framework.permissions.IsAuthenticated'],
+    'DEFAULT_PARSER_CLASSES': [
+        'rest_framework.parsers.JSONParser',
+        'common.uploads.PathMultiPartParser',
+    ],
     'DEFAULT_RENDERER_CLASSES': ['rest_framework.renderers.JSONRenderer'],
     'EXCEPTION_HANDLER': 'common.exceptions.ok_error_handler',
 }

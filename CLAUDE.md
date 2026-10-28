@@ -20,6 +20,7 @@ npm run preview              # vite preview of the built frontend
 docker compose up -d --wait   # start postgres + redis + garage
 deploy/garage-init.sh         # idempotent: Garage layout, bucket, access key (reads S3_* from .env)
 docker compose run --rm api python manage.py test   # Django API tests (need the services above + garage-init)
+docker compose exec api python manage.py import_legacy --owner you@example.com   # load templates/ and data/ (register the user first)
 docker compose down           # stop (volumes are kept; add -v to wipe)
 
 # Tunnels (expose local server publicly for remote collaboration)

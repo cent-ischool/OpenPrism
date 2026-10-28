@@ -94,6 +94,18 @@ function getAuthHeader(): Record<string, string> {
   return { Authorization: `Bearer ${token}` };
 }
 
+// The API answers errors as {ok: false, error}; fall back to the raw body for anything else (proxies, 5xx).
+async function errorMessage(res: Response): Promise<string> {
+  const text = await res.text();
+  try {
+    const body = JSON.parse(text) as { error?: string };
+    if (body && typeof body.error === 'string') return body.error;
+  } catch {
+    // not JSON
+  }
+  return text || res.statusText;
+}
+
 async function request<T>(url: string, options?: RequestInit): Promise<T> {
   const lang = getLangHeader();
   const mergedHeaders: Record<string, string> = {
@@ -109,7 +121,7 @@ async function request<T>(url: string, options?: RequestInit): Promise<T> {
     headers: mergedHeaders
   });
   if (!res.ok) {
-    throw new Error(await res.text());
+    throw new Error(await errorMessage(res));
   }
   return res.json() as Promise<T>;
 }
@@ -213,11 +225,12 @@ export async function deleteFile(id: string, filePath: string) {
   const res = await fetch(`/api/projects/${id}/file?${qs}`, {
     method: 'DELETE',
     headers: {
-      'x-lang': getLangHeader()
+      'x-lang': getLangHeader(),
+      ...getAuthHeader()
     }
   });
   if (!res.ok) {
-    throw new Error(await res.text());
+    throw new Error(await errorMessage(res));
   }
   return res.json() as Promise<{ ok: boolean; error?: string }>;
 }
@@ -245,7 +258,7 @@ export async function uploadFiles(projectId: string, files: File[], basePath?: s
     }
   });
   if (!res.ok) {
-    throw new Error(await res.text());
+    throw new Error(await errorMessage(res));
   }
   return res.json() as Promise<{ ok: boolean; files?: string[] }>;
 }
@@ -324,7 +337,7 @@ export async function uploadTemplate(templateId: string, templateLabel: string, 
     headers: { 'x-lang': lang, ...getAuthHeader() },
     body: form,
   });
-  if (!res.ok) throw new Error(await res.text());
+  if (!res.ok) throw new Error(await errorMessage(res));
   return res.json() as Promise<{ ok: boolean; templateId?: string; error?: string }>;
 }
 
@@ -393,7 +406,7 @@ export async function importZip(payload: { file: File; projectName?: string }) {
     }
   });
   if (!res.ok) {
-    throw new Error(await res.text());
+    throw new Error(await errorMessage(res));
   }
   return res.json() as Promise<{ ok: boolean; project?: ProjectMeta; error?: string }>;
 }
@@ -459,7 +472,7 @@ export async function visionToLatex(payload: {
     }
   });
   if (!res.ok) {
-    throw new Error(await res.text());
+    throw new Error(await errorMessage(res));
   }
   return res.json() as Promise<{ ok: boolean; latex?: string; assetPath?: string; error?: string }>;
 }
@@ -552,7 +565,7 @@ export async function mineruTransferUploadPdf(jobId: string, pdfFile: File) {
     },
   });
   if (!res.ok) {
-    throw new Error(await res.text());
+    throw new Error(await errorMessage(res));
   }
   return res.json() as Promise<{ ok: boolean; pdfPath?: string }>;
 }

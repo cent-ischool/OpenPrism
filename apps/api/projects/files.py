@@ -29,8 +29,20 @@ def _touch(project):
     Project.objects.filter(pk=project.pk).update(updated_at=timezone.now())
 
 
+def _assert_can_create(project, path):
+    """A path may not sit under a file, nor replace a directory."""
+    parts = path.split('/')
+    ancestors = ['/'.join(parts[:i]) for i in range(1, len(parts))]
+    if ancestors and project.files.filter(path__in=ancestors).exclude(kind=ProjectFile.DIR).exists():
+        raise IsADirectoryError(f'A parent of {path} is a file')
+    if project.files.filter(path__startswith=path + '/').exists() or project.files.filter(
+            path=path, kind=ProjectFile.DIR).exists():
+        raise IsADirectoryError(f'{path} is a directory')
+
+
 def write_text(project, path, content):
     path = safe_path(path)
+    _assert_can_create(project, path)
     with transaction.atomic():
         obj, _ = project.files.update_or_create(
             path=path,
@@ -43,6 +55,7 @@ def write_text(project, path, content):
 
 def write_binary(project, path, data, content_type=None):
     path = safe_path(path)
+    _assert_can_create(project, path)
     content_type = content_type or mimetypes.guess_type(path)[0] or 'application/octet-stream'
     key = f'projects/{project.id}/{uuid.uuid4().hex}'
     storage.put_bytes(key, data, content_type)
@@ -88,8 +101,13 @@ def read_bytes(project, path):
 
 def mkdir(project, path):
     path = safe_path(path)
-    obj, _ = project.files.get_or_create(path=path, defaults={'kind': ProjectFile.DIR})
-    return obj
+    existing = project.files.filter(path=path).first()
+    if existing:
+        if existing.kind != ProjectFile.DIR:
+            raise FileExistsError(path)
+        return existing
+    _assert_can_create(project, path)
+    return project.files.create(path=path, kind=ProjectFile.DIR)
 
 
 def list_tree(project):
