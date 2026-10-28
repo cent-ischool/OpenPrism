@@ -137,6 +137,9 @@ class CollabTestBase(TransactionTestCase):
     async def db(self, fn, *args, **kwargs):
         return await database_sync_to_async(fn)(*args, **kwargs)
 
+    async def jwt(self, user):
+        return await self.db(lambda: str(RefreshToken.for_user(user).access_token))  # issuing a token writes to the blacklist table
+
     def file_text(self, path='main.tex'):
         return files.read_text(self.project, path)
 
@@ -236,7 +239,7 @@ class AuthTests(CollabTestBase):
     async def test_rejections(self):
         m = self.manager()
         other = await self.db(make_user, 'stranger@example.com')
-        stranger_jwt = str(RefreshToken.for_user(other).access_token)
+        stranger_jwt = await self.jwt(other)
         other_project = await self.db(Project.objects.create, workspace=self.workspace, name='Other')
         wrong_token, _ = await self.db(tokens.create_invite, other_project, self.user, 'editor')
         expired_token, invite = await self.db(tokens.create_invite, self.project, self.user, 'editor')
@@ -255,8 +258,7 @@ class AuthTests(CollabTestBase):
 
     async def test_member_jwt_is_accepted(self):
         m = self.manager()
-        jwt = str(RefreshToken.for_user(self.user).access_token)
-        a = await self.join(m, token=jwt)
+        a = await self.join(m, token=await self.jwt(self.user))
         a.insert(0, 'by owner')
         await settle(a)
         self.assertIsNone(a.close)
@@ -357,7 +359,7 @@ class ReplicaTests(CollabTestBase):
         a, b = await self.join(ma), await self.join(mb)
         a.insert(0, 'save me now')
         await settle(a, b)
-        api = client_for(self.user)
+        api = await self.db(client_for, self.user)
         res = await sync_to_async(api.post, thread_sensitive=False)(f'/api/projects/{self.pid}/collab/flush', {'path': 'main.tex'}, format='json')
         self.assertEqual(res.data, {'ok': True})
         self.assertEqual(await self.db(self.file_text), 'save me now')            # persisted by the time it returned
@@ -378,7 +380,7 @@ class ReplicaTests(CollabTestBase):
             a.insert(0, 'x')
             await settle(a)
             await asyncio.sleep(0.2)
-            status = await sync_to_async(client_for(self.user).get, thread_sensitive=False)(f'/api/projects/{self.pid}/collab/status', {'path': 'main.tex'})
+            status = await sync_to_async((await self.db(client_for, self.user)).get, thread_sensitive=False)(f'/api/projects/{self.pid}/collab/status', {'path': 'main.tex'})
         self.assertEqual(status.data['diagnostics']['lastError'], 'disk full')
         await a.disconnect()
 

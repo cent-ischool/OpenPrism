@@ -393,7 +393,7 @@ def import_arxiv_sse(request):
     if not arxiv_id:
         return StreamingHttpResponse(iter([_sse('error', {'error': 'Invalid arXiv ID.'})]),
                                      content_type='text/event-stream', headers=headers)
-    workspace = _default_workspace(request.user)
+    workspace = _default_workspace(request.user, request.query_params.get('workspaceId'))
     name = request.query_params.get('projectName') or f'arxiv-{arxiv_id}'
     job = Job.objects.create(type=Job.IMPORT, user=request.user, params={
         'arxivId': arxiv_id, 'name': name, 'workspaceId': str(workspace.id),

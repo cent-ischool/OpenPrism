@@ -40,3 +40,57 @@ class AuthTests(TestCase):
         res = self.client.get('/api/auth/me')
         self.assertEqual(res.status_code, 401)
         self.assertFalse(res.data['ok'])
+
+
+class SessionTests(TestCase):
+    """Login casing, token rotation, logout and rate limiting."""
+
+    def setUp(self):
+        from django.core.cache import cache
+        cache.clear()
+        self.addCleanup(cache.clear)
+        self.client = APIClient()
+        self.client.post('/api/auth/register', {'email': 'Mixed@Example.com', 'password': 'correct-horse-battery'}, format='json')
+
+    def login(self, email='mixed@example.com'):
+        return self.client.post('/api/auth/login', {'email': email, 'password': 'correct-horse-battery'}, format='json')
+
+    def test_login_ignores_email_case(self):
+        for variant in ('mixed@example.com', 'MIXED@EXAMPLE.COM', ' Mixed@Example.com '):
+            self.assertEqual(self.login(variant).status_code, 200, variant)
+        self.assertEqual(self.client.post('/api/auth/login', {'email': 'mixed@example.com', 'password': 'wrong'}, format='json').status_code, 401)
+
+    def test_registration_gives_a_personal_workspace(self):
+        access = self.login().data['access']
+        self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {access}')
+        workspaces = self.client.get('/api/workspaces').data['workspaces']
+        self.assertEqual([(w['name'], w['kind']) for w in workspaces], [('Personal', 'Personal')])
+
+    def test_refresh_rotates_and_revokes_the_old_token(self):
+        old = self.login().data['refresh']
+        new = self.client.post('/api/auth/refresh', {'refresh': old}, format='json').data
+        self.assertIn('access', new)
+        self.assertNotEqual(new['refresh'], old)                                   # rotated
+        self.assertEqual(self.client.post('/api/auth/refresh', {'refresh': old}, format='json').status_code, 401)  # old one is dead
+        self.assertEqual(self.client.post('/api/auth/refresh', {'refresh': new['refresh']}, format='json').status_code, 200)
+
+    def test_logout_revokes_the_refresh_token(self):
+        refresh = self.login().data['refresh']
+        self.assertTrue(self.client.post('/api/auth/logout', {'refresh': refresh}, format='json').data['ok'])
+        self.assertEqual(self.client.post('/api/auth/refresh', {'refresh': refresh}, format='json').status_code, 401)
+        self.assertTrue(self.client.post('/api/auth/logout', {'refresh': 'garbage'}, format='json').data['ok'])  # idempotent
+
+    def test_update_profile_name(self):
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {self.login().data['access']}")
+        self.assertEqual(self.client.patch('/api/auth/me', {'name': '  Ada  '}, format='json').data['user']['name'], 'Ada')
+        self.assertEqual(self.client.patch('/api/auth/me', {'name': ' '}, format='json').status_code, 400)
+
+    def test_login_attempts_are_rate_limited(self):
+        from unittest import mock
+        from django.core.cache import cache
+        from rest_framework.throttling import ScopedRateThrottle
+        cache.clear()  # setUp's registration shares the 'auth' scope; start counting from zero
+        with mock.patch.object(ScopedRateThrottle, 'THROTTLE_RATES', {'auth': '3/min'}):
+            codes = [self.client.post('/api/auth/login', {'email': 'mixed@example.com', 'password': 'bad'}, format='json').status_code
+                     for _ in range(5)]
+        self.assertEqual(codes, [401, 401, 401, 429, 429])

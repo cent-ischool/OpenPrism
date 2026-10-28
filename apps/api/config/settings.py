@@ -36,6 +36,7 @@ INSTALLED_APPS = [
     'django.contrib.messages',
     'channels',
     'rest_framework',
+    'rest_framework_simplejwt.token_blacklist',
     'accounts',
     'projects',
     'templates_app',
@@ -116,6 +117,8 @@ REST_FRAMEWORK = {
         'common.uploads.PathMultiPartParser',
     ],
     'DEFAULT_RENDERER_CLASSES': ['rest_framework.renderers.JSONRenderer'],
+    'DEFAULT_THROTTLE_CLASSES': ['rest_framework.throttling.ScopedRateThrottle'],  # only views that set throttle_scope
+    'DEFAULT_THROTTLE_RATES': {'auth': env('AUTH_RATE_LIMIT', '10000/min' if TESTING else '20/min')},
     'EXCEPTION_HANDLER': 'common.exceptions.ok_error_handler',
 }
 
@@ -123,9 +126,13 @@ SIMPLE_JWT = {
     'ACCESS_TOKEN_LIFETIME': timedelta(minutes=int(env('JWT_ACCESS_MINUTES', '30'))),
     'REFRESH_TOKEN_LIFETIME': timedelta(days=int(env('JWT_REFRESH_DAYS', '14'))),
     'AUTH_HEADER_TYPES': ('Bearer',),
+    'ROTATE_REFRESH_TOKENS': True,       # each refresh issues a new refresh token…
+    'BLACKLIST_AFTER_ROTATION': True,    # …and revokes the old one, so a stolen refresh token has a short life
 }
 
 REDIS_URL = env('REDIS_URL', 'redis://localhost:6379/0')
+# Shared across replicas so rate limits (login attempts) are enforced per user, not per process.
+CACHES = {'default': {'BACKEND': 'django.core.cache.backends.redis.RedisCache', 'LOCATION': REDIS_URL}}
 CELERY_BROKER_URL = env('CELERY_BROKER_URL', REDIS_URL)
 CELERY_RESULT_BACKEND = env('CELERY_RESULT_BACKEND', REDIS_URL)
 CELERY_TASK_ACKS_LATE = True  # a task whose worker dies is redelivered; tasks must tolerate re-running

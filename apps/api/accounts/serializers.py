@@ -32,6 +32,8 @@ class RegisterSerializer(serializers.Serializer):
     @transaction.atomic
     def create(self, data):
         user = User.objects.create_user(data['email'], data['password'], name=data.get('name', ''))
-        workspace = Workspace.objects.create(name=f"{data.get('name') or data['email']}'s workspace")
+        workspace = Workspace.objects.create(name='Personal', kind=Workspace.PERSONAL, color='#5b6573')
         Membership.objects.create(workspace=workspace, user=user, role=Membership.OWNER)
+        from projects.workspaces import accept_pending_invites
+        accept_pending_invites(user)
         return user
