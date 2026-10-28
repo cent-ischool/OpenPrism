@@ -8,3 +8,5 @@ apps/backend/.cache/
 data/
 
 AGENTS.md
+__pycache__/
+*.pyc
