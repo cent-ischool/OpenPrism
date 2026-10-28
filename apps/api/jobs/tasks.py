@@ -6,6 +6,7 @@ from celery.exceptions import SoftTimeLimitExceeded
 from django.conf import settings
 from django.utils import timezone
 
+from common import secrets as job_secrets
 from projects import storage
 
 from . import compile as tex
@@ -59,12 +60,20 @@ def compile_project(job_id):
 
 @shared_task(name='jobs.tasks.reap_stale_jobs')
 def reap_stale_jobs():
-    """Fail jobs whose worker died (no heartbeat) or that never got picked up."""
+    """Fail jobs whose worker died (no heartbeat) or that never got picked up, and drop their stored secrets."""
     now = timezone.now()
-    running = Job.objects.filter(status=Job.RUNNING, updated_at__lt=now - timedelta(minutes=settings.JOB_RUNNING_STALE_MINUTES))
-    queued = Job.objects.filter(status=Job.QUEUED, updated_at__lt=now - timedelta(minutes=settings.JOB_QUEUED_STALE_MINUTES))
-    count = running.update(status=Job.FAILED, error='Job timed out (worker stopped responding).', updated_at=now)
-    count += queued.update(status=Job.FAILED, error='Job was never started (queue backlog or lost message).', updated_at=now)
+    stale = [
+        (Job.objects.filter(status=Job.RUNNING, updated_at__lt=now - timedelta(minutes=settings.JOB_RUNNING_STALE_MINUTES)),
+         'Job timed out (worker stopped responding).'),
+        (Job.objects.filter(status=Job.QUEUED, updated_at__lt=now - timedelta(minutes=settings.JOB_QUEUED_STALE_MINUTES)),
+         'Job was never started (queue backlog or lost message).'),
+    ]
+    count = 0
+    for queryset, message in stale:
+        ids = list(queryset.values_list('pk', flat=True))
+        count += queryset.filter(pk__in=ids).update(status=Job.FAILED, error=message, updated_at=now)
+        for job_id in ids:
+            job_secrets.delete(str(job_id))
     return count
 
 
@@ -76,6 +85,7 @@ def cleanup_old_jobs():
     n = 0
     for job in old.iterator():
         storage.delete_prefix(f'jobs/{job.id}/')
+        job_secrets.delete(str(job.id))
         job.delete()
         n += 1
     return n

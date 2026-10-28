@@ -9,6 +9,7 @@ from unittest import mock, skipUnless
 from django.test import TestCase, override_settings
 from django.utils import timezone
 
+from common import secrets as job_secrets
 from projects import files, storage
 from projects.models import Project
 from projects.test_api import ApiBase, client_for, make_user
@@ -140,7 +141,9 @@ class CompileTaskTests(TestCase):
         stuck = Job.objects.create(type='compile', status='queued')
         fresh = Job.objects.create(type='compile', status='running')
         Job.objects.filter(pk__in=[stale.pk, stuck.pk]).update(updated_at=old)
+        job_secrets.put(str(stale.pk), {'apiKey': 'k'})
         self.assertEqual(tasks.reap_stale_jobs(), 2)
+        self.assertEqual(job_secrets.get(str(stale.pk)), {})  # a reaped job must not leave its API key behind
         for j in (stale, stuck, fresh):
             j.refresh_from_db()
         self.assertEqual((stale.status, stuck.status, fresh.status), ('failed', 'failed', 'running'))

@@ -5,10 +5,12 @@ DICT = {
     'zh-CN': {
         'llm_error': 'LLM 未配置或调用失败：{error}。你可以在前端设置里填写 API Key/Endpoint，或配置 OPENPRISM_LLM_* 环境变量。',
         'missing_project_id_tools': '缺少 projectId，无法使用工具模式。',
+        'arxiv_download_failed': 'arXiv 下载失败: {error}',
     },
     'en-US': {
         'llm_error': 'LLM is not configured or the call failed: {error}. You can set the API Key/Endpoint in the UI or configure OPENPRISM_LLM_* environment variables.',
         'missing_project_id_tools': 'Missing projectId; tools mode is unavailable.',
+        'arxiv_download_failed': 'arXiv download failed: {error}',
     },
 }
 

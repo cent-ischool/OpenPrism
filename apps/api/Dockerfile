@@ -19,7 +19,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     texlive-science texlive-xetex texlive-luatex texlive-bibtex-extra \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 USER app
-CMD ["celery", "-A", "config", "worker", "-Q", "compile", "-l", "info", "--concurrency", "2"]
+CMD ["celery", "-A", "config", "worker", "-Q", "compile,transfer", "-l", "info", "--concurrency", "2"]
 
 
 FROM base AS ai
@@ -27,7 +27,7 @@ USER root
 COPY requirements-ai.txt .
 RUN pip install --no-cache-dir -r requirements-ai.txt
 USER app
-CMD ["celery", "-A", "config", "worker", "-Q", "ai,transfer,import", "-l", "info", "--concurrency", "4"]
+CMD ["celery", "-A", "config", "worker", "-Q", "ai,import", "-l", "info", "--concurrency", "4"]
 
 
 FROM base AS api

@@ -85,10 +85,18 @@ services:
       redis: {condition: service_healthy}
       garage: {condition: service_healthy}
 
-  # Compile worker: the only image with TeX Live. After editing Python code, `docker compose restart worker-tex`.
+  # TeX worker (queues compile + transfer): the only image with TeX Live. After editing Python code, `docker compose restart worker-tex`.
   worker-tex:
     build: {context: ./apps/api, target: tex}
-    environment: *api-env
+    # Also runs the `transfer` queue (template transfer compiles LaTeX), so it makes LLM/MinerU calls like worker-ai.
+    environment:
+      <<: *api-env
+      LLM_ALLOW_PRIVATE_ENDPOINTS: ${LLM_ALLOW_PRIVATE_ENDPOINTS:-0}
+      OPENPRISM_LLM_ENDPOINT: ${OPENPRISM_LLM_ENDPOINT:-}
+      OPENPRISM_LLM_API_KEY: ${OPENPRISM_LLM_API_KEY:-}
+      OPENPRISM_LLM_MODEL: ${OPENPRISM_LLM_MODEL:-}
+      OPENPRISM_MINERU_API_BASE: ${OPENPRISM_MINERU_API_BASE:-https://mineru.net/api/v4}
+      OPENPRISM_MINERU_TOKEN: ${OPENPRISM_MINERU_TOKEN:-}
     depends_on:
       postgres: {condition: service_healthy}
       redis: {condition: service_healthy}

@@ -12,11 +12,11 @@ The app is mid-migration from a single Node/Fastify process (no database, state 
 
 | | Node backend (`apps/backend`, port 8787) | Django API (`apps/api`, port 8000) |
 |---|---|---|
-| Status | **Live** — the only backend the frontend can use today | Phases 1–4 and 5a done: models, JWT auth, S3-backed file service, projects/files/templates REST, legacy importer, Celery + async LaTeX compile, AI endpoints (llm, agent chat/direct/tools, vision, plot, arXiv search/bibtex) |
+| Status | **Live** — the only backend the frontend can use today | Phases 1–5 done: models, JWT auth, S3-backed file service, projects/files/templates REST, legacy importer, Celery + async LaTeX compile, AI endpoints (llm, agent chat/direct/tools, vision, plot, arXiv search/bibtex), template transfer (legacy + MinerU), arXiv import |
 | State | Directories under `OPENPRISM_DATA_DIR` | Postgres (text files, metadata) + Garage (binaries, PDFs, templates) |
 | Auth | Localhost trust + HMAC collab token | Real users, workspaces, roles, JWT |
 
-The frontend has **no login UI yet**, so it cannot talk to the Django API end to end; Vite proxies `/api` to `OPENPRISM_API_URL` (default `http://localhost:8787`). Remaining work, in order: **5b** MinerU + template transfer (`/api/transfer/*`, the LangGraph-based pipeline) rewritten in Python with durable state, plus arXiv *import* (SSE), **6** real-time collab on Django Channels (pycrdt-websocket, same y-websocket wire protocol), **7** cutover (nginx `web` image, delete `apps/backend`, frontend login), **8** k8s manifests in `deploy/k8s`. Phases 5b–8 are not started; do not assume their endpoints exist (`/api/transfer/*`, `/api/projects/import-arxiv-sse`, `/api/collab` are Node-only for now).
+The frontend has **no login UI yet**, so it cannot talk to the Django API end to end; Vite proxies `/api` to `OPENPRISM_API_URL` (default `http://localhost:8787`). Remaining work, in order: **6** real-time collab on Django Channels (pycrdt-websocket, same y-websocket wire protocol), **7** cutover (nginx `web` image, delete `apps/backend`, frontend login), **8** k8s manifests in `deploy/k8s`. Phases 6–8 are not started; do not assume their endpoints exist (`/api/collab` is Node-only for now).
 
 ## Running the project
 
@@ -31,11 +31,11 @@ npm run dev                  # Vite (5173) + Node backend (8787)
 
 **Data services + Django API (compose.yaml at the repo root):**
 ```bash
-docker compose up -d --wait  # postgres, redis, garage, api (runs `migrate`, then uvicorn --reload on :8000), worker-tex (Celery compile worker), worker-ai (Celery ai/transfer/import queues), beat
+docker compose up -d --wait  # postgres, redis, garage, api (runs `migrate`, then uvicorn --reload on :8000), worker-tex (Celery compile worker), worker-ai (Celery ai + import queues), beat
 deploy/garage-init.sh        # one-time & idempotent: Garage layout, bucket, access key (reads S3_* from .env)
 docker compose exec api python manage.py import_legacy --owner you@example.com   # optional: load templates/ and data/ (register that user first via POST /api/auth/register)
 docker compose run --rm api python manage.py test        # API tests against the real Postgres + Garage (needs garage-init done); LaTeX tests skip here
-docker compose run --rm worker-tex python manage.py test jobs   # same, plus real pdflatex/bibtex compile tests (slow image, run when touching jobs/compile.py)
+docker compose run --rm worker-tex python manage.py test jobs transfer   # same, plus real pdflatex/bibtex compile + transfer tests (slow image, run when touching jobs/compile.py or transfer/)
 docker compose run --rm worker-ai python manage.py test ai      # same, plus real matplotlib plot + sandbox tests (run when touching ai/plot*.py)
 docker compose logs -f api worker-tex   # tail logs
 docker compose restart worker-tex worker-ai beat   # Celery does not auto-reload: run after editing Python used by tasks
@@ -73,8 +73,8 @@ npm workspaces monorepo: `apps/frontend` (React 18 + TypeScript + Vite), `apps/b
 |---|---|---|
 | `web` | nginx + built frontend | static SPA, proxies `/api` and WebSocket upgrades *(Phase 7)* |
 | `api` | Django + DRF, uvicorn (ASGI) | stateless REST (and later Channels collab); `/healthz`, `/readyz` — **exists** |
-| `worker-tex` | Celery, queue `compile` | image with TeX Live; per-command timeout, CPU/file-size rlimits, shell-escape off — **exists** (set container CPU/mem limits in k8s) |
-| `worker-ai` | Celery, queues `ai`/`transfer`/`import` | LLM, vision, plot (runs LLM-generated Python), agent — **exist**; transfer graph, MinerU, arXiv import *(Phase 5b)*. Image adds matplotlib/pandas/seaborn (`requirements-ai.txt`) |
+| `worker-tex` | Celery, queues `compile` + `transfer` | image with TeX Live (template transfer compiles LaTeX, so it runs here and also makes LLM/MinerU calls); per-command timeout, CPU/file-size rlimits, shell-escape off — **exists** (set container CPU/mem limits in k8s) |
+| `worker-ai` | Celery, queues `ai` + `import` | LLM, vision, plot (runs LLM-generated Python), agent, arXiv import — **exist**. Image adds matplotlib/pandas/seaborn (`requirements-ai.txt`) |
 | `beat` | Celery beat | reaps jobs whose worker died, deletes finished jobs after 24 h — **exists** (expired collab invites: later) |
 | `postgres`, `redis`, `garage` | | **exist** in `compose.yaml`; managed services/operators in k8s |
 
@@ -82,7 +82,7 @@ Rules for this design: services are stateless and 12-factor (env-only config, no
 
 ### Django API (`apps/api`)
 
-Apps: `accounts` (email-login `User`, register/login/refresh/me), `projects` (`Workspace`, `Membership`, `Project`, `ProjectFile`, file service, REST views), `templates_app` (`Template` + S3 template files), `jobs` (`Job` model, compile service + Celery tasks, job API), `ai` (LLM client, agent, plot sandbox, arXiv, AI task + endpoints), `collab` (`CollabInvite`), `common` (health, `{ok,error}` exception handler, path-preserving multipart parser, safe zip reader). `config/` has settings, urls, asgi, and the Celery app.
+Apps: `accounts` (email-login `User`, register/login/refresh/me), `projects` (`Workspace`, `Membership`, `Project`, `ProjectFile`, file service, REST views), `templates_app` (`Template` + S3 template files), `jobs` (`Job` model, compile service + Celery tasks, job API), `ai` (LLM client, agent, plot sandbox, arXiv, AI task + endpoints), `transfer` (template-transfer engine, nodes, MinerU client, endpoints), `collab` (`CollabInvite`), `common` (health, `{ok,error}` exception handler, path-preserving multipart parser, safe zip reader). `config/` has settings, urls, asgi, and the Celery app.
 
 **Data model.** `Project` mirrors the old `project.json` (name, tags, archived, trashed/trashed_at, `file_order` JSON) and belongs to a `Workspace`; users reach projects through `Membership` roles (`owner`/`admin`/`editor` can write, `viewer` read-only). Registering creates a personal workspace. A user who is not a member gets **404, not 403**, to avoid revealing project existence.
 
@@ -104,6 +104,16 @@ Apps: `accounts` (email-login `User`, register/login/refresh/me), `projects` (`W
 - **Plot** (`ai/plot.py` + `plot_runner.py`) runs LLM-written Python in a subprocess: AST check (no imports/dunders/introspection) → whitelisted builtins → scrubbed environment (no worker secrets) → rlimits + timeout → temp dir deleted. This is defence in depth, **not a real sandbox** (e.g. `plt.sys.modules` is reachable). Real isolation must come from the deployment: run `worker-ai` with no extra secrets, a pids limit, and a NetworkPolicy denying egress except LLM providers.
 - Tests fake the LLM with a local HTTP server (`FakeLLM` in `ai/tests.py`) and run the task inline; real-Celery routing was verified manually with `docker compose up worker-ai`.
 - A request holds a web thread while it waits; scale `api` accordingly or move clients to polling `/api/jobs/:id`.
+
+**Template transfer (`apps/api/transfer`).** Port of the LangGraph pipeline (`graph.js`/`graphMineru.js`), same endpoints and `{status, progressLog, error}` shape as Node (`pending|running|waiting_images|success|failed`), but nothing blocks: `/start` creates the target project from the template and a `Job`; the **first `/step` claims the job and enqueues segment 1; later `/step` calls are read-only status polls**; `/status/:id` is the same read. Design points:
+- **Hand-written state machine, not LangGraph** (`transfer/engine.py`). It runs nodes (`transfer/nodes.py`, one function per Node file) in *segments*: a segment ends at the pause before `checkLayout` (status `waiting_images`) or at `finalize`. `POST /submit-images` stores the screenshots in S3, bumps the segment number and enqueues the next segment. Only small state is persisted between segments (`engine.PERSISTED`: counters, compile/layout results, S3 keys); large intermediates (source text, Markdown, plan) live in memory for one segment, so **a segment must be restartable from its entry point** (`start` or `checkLayout`). A stale or duplicate segment is ignored (segment number) and a Postgres advisory lock stops two workers running the same job. LangGraph was rejected mainly because its checkpointer would write the API key into Postgres.
+- **Secrets** (LLM key, MinerU token) are kept in Redis under `openprism:job-secrets:<jobId>` with a TTL (`JOB_SECRET_TTL_SECONDS`, 6 h, refreshed on use) via `common/secrets.py`, and deleted when the job ends, fails or is reaped. Never in `Job.params`/`result`/`progress_log`; `TransferApiTests.assert_no_secrets_in_db` guards this.
+- Snapshots of files the pipeline overwrites go to S3 (`jobs/<id>/snapshots/…`), not into the project tree (Node leaked `.agent_runs/` into the file list). The final PDF is `jobs/<id>/output.pdf`, served by `GET /api/jobs/:id/pdf`.
+- A worker crash fails the job (the reaper marks it after 10 idle minutes); there is no auto-resume because the key was never persisted. Compile "success" means a PDF exists even if the engine exited non-zero (as in Node), so `fixCompile` only fires when no PDF is produced.
+- MinerU (`transfer/mineru.py`): the user-supplied `apiBase`, the upload URL and every redirect hop of the result download pass the SSRF guard; result-zip paths are validated strictly (unsafe path = error).
+- **Known frontend gap (pre-existing, not fixed):** `TransferPanel` stops at `waiting_images` and nothing renders PDF pages or calls `transferSubmitImages`, so `layoutCheck` cannot complete from the UI (same on the Node backend). The backend side is fully implemented and tested.
+
+**arXiv import.** `GET /api/projects/import-arxiv-sse?arxivIdOrUrl=&projectName=&token=` creates an `import` Job (queue `import`, worker-ai) and relays its progress as SSE `progress`/`done`/`error` events (auth via `?token=` since EventSource can't set headers). The task streams the download to a temp file, unpacks it with path/link/size checks (tar, or a single gzipped `.tex` saved as `main.tex`), and deletes the project if anything fails.
 
 **Frontend compile contract.** `compileProject()` in `api/client.ts` works against both backends: Node answers with the finished PDF, Django returns a `jobId` which the client polls (1 s, 10 min cap) and then downloads, resolving to the same `{ok, pdf(base64), log, status}` shape and reporting progress via an optional callback (the editor shows it in the status bar).
 

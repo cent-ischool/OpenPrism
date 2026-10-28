@@ -5,6 +5,7 @@ from . import views as v
 urlpatterns = [
     path('projects', v.projects_collection),
     path('projects/import-zip', v.import_zip),
+    path('projects/import-arxiv-sse', v.import_arxiv_sse),
     path('projects/<uuid:pk>', v.project_trash_delete),
     path('projects/<uuid:pk>/permanent', v.project_permanent_delete),
     path('projects/<uuid:pk>/rename-project', v.rename_project),

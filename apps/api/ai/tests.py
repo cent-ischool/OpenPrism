@@ -1,12 +1,11 @@
 import importlib.util
 import json
-import threading
-from http.server import BaseHTTPRequestHandler, HTTPServer
 from unittest import mock, skipUnless
 
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import SimpleTestCase, override_settings
 
+from common.testing import FakeLLM, tool_call
 from jobs.models import Job
 from projects import files, storage
 from projects.models import Membership, Project
@@ -24,46 +23,6 @@ ATOM = """<?xml version="1.0"?><feed xmlns="http://www.w3.org/2005/Atom">
 <title>Attention Is
  All You Need</title><summary> The dominant   models </summary>
 <author><name>A. Vaswani</name></author><author><name>N. Shazeer</name></author></entry></feed>"""
-
-
-class FakeLLM:
-    """A tiny OpenAI-compatible server. `replies` are popped per request; each request is recorded."""
-
-    def __init__(self, replies):
-        self.replies, self.requests = list(replies), []
-        outer = self
-
-        class Handler(BaseHTTPRequestHandler):
-            def do_POST(self):
-                body = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
-                outer.requests.append({'path': self.path, 'auth': self.headers.get('Authorization'), 'body': body})
-                reply = outer.replies.pop(0) if outer.replies else {'content': 'default'}
-                if isinstance(reply, tuple):  # (status, text) for error responses
-                    self.send_response(reply[0])
-                    self.end_headers()
-                    self.wfile.write(reply[1].encode())
-                    return
-                payload = json.dumps({'choices': [{'message': reply}]}).encode()
-                self.send_response(200)
-                self.send_header('Content-Type', 'application/json')
-                self.end_headers()
-                self.wfile.write(payload)
-
-            def log_message(self, *a):
-                pass
-
-        self.server = HTTPServer(('127.0.0.1', 0), Handler)
-        self.url = f'http://127.0.0.1:{self.server.server_port}/v1'
-        threading.Thread(target=self.server.serve_forever, daemon=True).start()
-
-    def close(self):
-        self.server.shutdown()
-        self.server.server_close()
-
-
-def tool_call(name, args, call_id='c1'):
-    return {'content': None, 'tool_calls': [{'id': call_id, 'type': 'function',
-                                             'function': {'name': name, 'arguments': json.dumps(args)}}]}
 
 
 class PureTests(SimpleTestCase):

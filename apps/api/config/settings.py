@@ -40,6 +40,7 @@ INSTALLED_APPS = [
     'templates_app',
     'jobs',
     'ai',
+    'transfer',
     'collab',
     'common',
 ]
@@ -129,6 +130,8 @@ CELERY_BROKER_TRANSPORT_OPTIONS = {'visibility_timeout': 900}  # must exceed the
 CELERY_TASK_ROUTES = {
     'jobs.tasks.compile_*': {'queue': 'compile'},
     'ai.tasks.*': {'queue': 'ai'},
+    'transfer.tasks.*': {'queue': 'transfer'},  # served by worker-tex: transfer compiles LaTeX
+    'projects.tasks.*': {'queue': 'import'},
 }
 CELERY_BEAT_SCHEDULE = {
     'reap-stale-jobs': {'task': 'jobs.tasks.reap_stale_jobs', 'schedule': 60.0},
@@ -138,6 +141,11 @@ CELERY_BEAT_SCHEDULE = {
 LLM_TIMEOUT_SECONDS = int(env('LLM_TIMEOUT_SECONDS', '180'))
 LLM_ALLOW_PRIVATE_ENDPOINTS = env_bool('LLM_ALLOW_PRIVATE_ENDPOINTS', False)  # true only for local models in dev
 AI_WAIT_SECONDS = int(env('AI_WAIT_SECONDS', '300'))  # how long an AI endpoint blocks waiting for its worker
+JOB_SECRET_TTL_SECONDS = int(env('JOB_SECRET_TTL_SECONDS', str(6 * 3600)))  # how long a transfer job may keep its API key
+MINERU_API_BASE = env('OPENPRISM_MINERU_API_BASE', 'https://mineru.net/api/v4')
+MINERU_TOKEN = env('OPENPRISM_MINERU_TOKEN', '')
+MINERU_POLL_INTERVAL_SECONDS = float(env('MINERU_POLL_INTERVAL_SECONDS', '3'))
+MINERU_MAX_POLL_ATTEMPTS = int(env('MINERU_MAX_POLL_ATTEMPTS', '200'))
 PLOT_TIMEOUT_SECONDS = int(env('PLOT_TIMEOUT_SECONDS', '60'))
 COMPILE_TIMEOUT_SECONDS = int(env('COMPILE_TIMEOUT_SECONDS', '120'))  # per command (each pass / bibtex)
 COMPILE_MAX_FILE_BYTES = int(env('COMPILE_MAX_FILE_BYTES', str(200 * 1024 * 1024)))

@@ -1,22 +1,28 @@
 """Project / file endpoints. URLs and response shapes follow apps/frontend/src/api/client.ts."""
 import base64
+import json
+import time
 import zipfile
 from datetime import timezone as dt_timezone
 
 from django.db import transaction
-from django.http import HttpResponse
+from django.http import HttpResponse, StreamingHttpResponse
 from django.utils import timezone
 from rest_framework.decorators import api_view, authentication_classes, parser_classes
 from rest_framework.exceptions import NotFound, ParseError
 from rest_framework.parsers import JSONParser
 from rest_framework.response import Response
 
+from ai import arxiv
+from ai.i18n import get_lang
 from common.uploads import PathMultiPartParser, upload_path
 from common.zips import iter_zip_files
+from jobs.models import Job
 from templates_app import service as templates
 from templates_app.models import Template
 
 from . import files as pfiles
+from .tasks import import_arxiv
 from .access import QueryTokenJWTAuthentication, get_project, user_projects
 from .models import Membership, Project, ProjectFile, Workspace
 from .paths import InvalidPath, safe_path
@@ -358,3 +364,50 @@ def convert_template(request, pk):
     except Exception as exc:
         return fail(f'Template convert failed: {exc}')
     return Response({'ok': True, 'mainFile': template_main, 'changedFiles': changed})
+
+
+# ---- arXiv import (server-sent events) --------------------------------------------------------------
+
+def _sse(event, data):
+    return f'event: {event}\ndata: {json.dumps(data)}\n\n'.encode()
+
+
+@api_view(['GET'])
+@authentication_classes([QueryTokenJWTAuthentication])
+def import_arxiv_sse(request):
+    """Create a project from an arXiv paper. EventSource cannot set headers, so auth is `?token=`.
+
+    The download/extract runs in a worker (queue `import`); this response just relays its progress.
+    """
+    arxiv_id = arxiv.extract_id(request.query_params.get('arxivIdOrUrl'))
+    headers = {'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'}  # no proxy buffering, or events arrive in a lump
+    if not arxiv_id:
+        return StreamingHttpResponse(iter([_sse('error', {'error': 'Invalid arXiv ID.'})]),
+                                     content_type='text/event-stream', headers=headers)
+    workspace = _default_workspace(request.user)
+    name = request.query_params.get('projectName') or f'arxiv-{arxiv_id}'
+    job = Job.objects.create(type=Job.IMPORT, user=request.user, params={
+        'arxivId': arxiv_id, 'name': name, 'workspaceId': str(workspace.id),
+        'lang': get_lang(request.headers.get('x-lang'))})
+    import_arxiv.delay(str(job.id))
+
+    def stream():
+        deadline = time.monotonic() + 960
+        last = None
+        while time.monotonic() < deadline:
+            job.refresh_from_db()
+            progress = job.result.get('progress')
+            if progress and progress != last:
+                last = progress
+                yield _sse('progress', progress)
+            if job.status == Job.SUCCESS:
+                project = Project.objects.get(pk=job.result['projectId'])
+                yield _sse('done', {'ok': True, 'project': project_meta(project)})
+                return
+            if job.status == Job.FAILED:
+                yield _sse('error', {'error': job.error})
+                return
+            time.sleep(0.4)
+        yield _sse('error', {'error': 'Import timed out.'})
+
+    return StreamingHttpResponse(stream(), content_type='text/event-stream', headers=headers)
