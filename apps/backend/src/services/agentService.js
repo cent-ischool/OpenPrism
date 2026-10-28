@@ -22,7 +22,7 @@ export async function runToolAgent({
   selection,
   compileLog,
   llmConfig,
-  lang = 'zh-CN'
+  lang = 'en-US'
 }) {
   if (!projectId) {
     return { ok: false, reply: t(lang, 'missing_project_id_tools'), patches: [] };

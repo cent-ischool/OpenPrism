@@ -56,9 +56,9 @@ const COLLAB_TOKEN_KEY = 'openprism-collab-token';
 const COLLAB_SERVER_KEY = 'openprism-collab-server';
 
 function getLangHeader() {
-  if (typeof window === 'undefined') return 'zh-CN';
+  if (typeof window === 'undefined') return 'en-US';
   const stored = window.localStorage.getItem(LANG_KEY);
-  return stored === 'en-US' ? 'en-US' : 'zh-CN';
+  return stored === 'zh-CN' ? 'zh-CN' : 'en-US';
 }
 
 export function setCollabToken(token: string) {

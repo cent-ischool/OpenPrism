@@ -14,6 +14,8 @@ import type {
   TemplateMeta,
   FileItem,
 } from '../api/client';
+import { Badge, Button, Icon, SegmentedControl, Select } from '@design';
+import type { BadgeTone, SelectOption } from '@design';
 
 interface TransferPanelProps {
   projectId: string;
@@ -36,7 +38,6 @@ export default function TransferPanel({ projectId, onJobUpdate }: TransferPanelP
   // Source file selection
   const [sourceFiles, setSourceFiles] = useState<string[]>([]);
   const [sourceMainFile, setSourceMainFile] = useState('');
-  const [sourceDropdownOpen, setSourceDropdownOpen] = useState(false);
 
   // Target selection
   const [targetTemplateId, setTargetTemplateId] = useState('');
@@ -80,11 +81,6 @@ export default function TransferPanel({ projectId, onJobUpdate }: TransferPanelP
   const [mineruApiBase, setMineruApiBase] = useState(() => readMineruConfigFromStorage().mineruApiBase);
   const [mineruToken, setMineruToken] = useState(() => readMineruConfigFromStorage().mineruToken);
 
-  // Dropdown open states
-  const [templateDropdownOpen, setTemplateDropdownOpen] = useState(false);
-  const [engineDropdownOpen, setEngineDropdownOpen] = useState(false);
-  const [modeDropdownOpen, setModeDropdownOpen] = useState(false);
-
   // Job state
   const [jobId, setJobId] = useState('');
   const [status, setStatus] = useState<string>('idle');
@@ -96,11 +92,6 @@ export default function TransferPanel({ projectId, onJobUpdate }: TransferPanelP
   const [templates, setTemplates] = useState<TemplateMeta[]>([]);
   const [templatesLoaded, setTemplatesLoaded] = useState(false);
 
-  // Refs for click-outside
-  const sourceRef = useRef<HTMLDivElement>(null);
-  const templateRef = useRef<HTMLDivElement>(null);
-  const engineRef = useRef<HTMLDivElement>(null);
-  const modeRef = useRef<HTMLDivElement>(null);
   const pdfInputRef = useRef<HTMLInputElement>(null);
 
   // Load source .tex files on mount
@@ -131,19 +122,6 @@ export default function TransferPanel({ projectId, onJobUpdate }: TransferPanelP
     }
   }, [templatesLoaded]);
 
-  // Click outside to close dropdowns
-  useEffect(() => {
-    const handler = (e: MouseEvent) => {
-      if (sourceRef.current && !sourceRef.current.contains(e.target as Node)) setSourceDropdownOpen(false);
-      if (templateRef.current && !templateRef.current.contains(e.target as Node)) setTemplateDropdownOpen(false);
-      if (engineRef.current && !engineRef.current.contains(e.target as Node)) setEngineDropdownOpen(false);
-      if (modeRef.current && !modeRef.current.contains(e.target as Node)) setModeDropdownOpen(false);
-    };
-    document.addEventListener('mousedown', handler);
-    return () => document.removeEventListener('mousedown', handler);
-  }, []);
-
-  const selectedTemplateName = templates.find(tp => tp.id === targetTemplateId)?.label || '';
   const selectedTemplate = templates.find(tp => tp.id === targetTemplateId);
 
   const buildLlmConfig = (): Partial<LLMConfig> | undefined => {
@@ -243,20 +221,6 @@ export default function TransferPanel({ projectId, onJobUpdate }: TransferPanelP
     }
   }, [onJobUpdate]);
 
-  const chevronSvg = (open: boolean) => (
-    <svg width="12" height="12" viewBox="0 0 12 12" fill="none" className={open ? 'rotate' : ''}>
-      <path d="M3 5L6 8L9 5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
-    </svg>
-  );
-
-  const checkSvg = (
-    <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-      <path d="M3 8L6.5 11.5L13 5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-    </svg>
-  );
-
-  const modeLabel = transferMode === 'mineru' ? 'MinerU (PDF→MD→LaTeX)' : t('经典模式 (LaTeX→LaTeX)');
-
   const canStart = (() => {
     if (running || !targetTemplateId) return false;
     if (transferMode === 'legacy') return !!sourceMainFile;
@@ -267,204 +231,140 @@ export default function TransferPanel({ projectId, onJobUpdate }: TransferPanelP
     return false;
   })();
 
+  const modeOptions: SelectOption<TransferMode>[] = [
+    { value: 'mineru', label: 'MinerU (PDF→MD→LaTeX)' },
+    { value: 'legacy', label: t('经典模式 (LaTeX→LaTeX)') },
+  ];
+  const sourceOptions: SelectOption[] = sourceFiles.map(f => ({ value: f, label: f }));
+  const templateOptions: SelectOption[] = templates.map(tmpl => ({ value: tmpl.id, label: tmpl.label }));
+  const engineOptions: SelectOption[] = ENGINES.map(eng => ({ value: eng, label: eng }));
+
+  const statusTone: BadgeTone =
+    status === 'success' ? 'success'
+      : status === 'failed' || status === 'error' ? 'danger'
+        : status === 'waiting_images' ? 'warning'
+          : 'info';
+
   return (
-    <div className="transfer-panel">
+    <div className="tp">
       {/* Transfer mode selection */}
-      <div className="field">
-        <label>{t('转换模式')}</label>
-        <div className="ios-select-wrapper" ref={modeRef}>
-          <button className="ios-select-trigger" onClick={() => setModeDropdownOpen(!modeDropdownOpen)}>
-            <span>{modeLabel}</span>
-            {chevronSvg(modeDropdownOpen)}
-          </button>
-          {modeDropdownOpen && (
-            <div className="ios-dropdown dropdown-down">
-              <div
-                className={`ios-dropdown-item ${transferMode === 'mineru' ? 'active' : ''}`}
-                onClick={() => { setTransferMode('mineru'); setModeDropdownOpen(false); }}
-              >
-                MinerU (PDF→MD→LaTeX)
-                {transferMode === 'mineru' && checkSvg}
-              </div>
-              <div
-                className={`ios-dropdown-item ${transferMode === 'legacy' ? 'active' : ''}`}
-                onClick={() => { setTransferMode('legacy'); setModeDropdownOpen(false); }}
-              >
-                {t('经典模式 (LaTeX→LaTeX)')}
-                {transferMode === 'legacy' && checkSvg}
-              </div>
-            </div>
-          )}
-        </div>
+      <div className="op-field">
+        <label className="op-field-label" htmlFor="tp-mode">{t('转换模式')}</label>
+        <Select<TransferMode> id="tp-mode" value={transferMode} options={modeOptions} onChange={setTransferMode} />
       </div>
+
       {/* MinerU mode: source selection (project or upload) */}
       {transferMode === 'mineru' && (
-        <div className="field">
-          <label>{t('输入来源')}</label>
-          <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
-            <button
-              className={`btn ${mineruSource === 'project' ? 'primary' : ''}`}
-              style={{ flex: 1, fontSize: 12 }}
-              onClick={() => setMineruSource('project')}
-            >
-              {t('从当前项目编译')}
-            </button>
-            <button
-              className={`btn ${mineruSource === 'upload' ? 'primary' : ''}`}
-              style={{ flex: 1, fontSize: 12 }}
-              onClick={() => setMineruSource('upload')}
-            >
-              {t('上传 PDF')}
-            </button>
-          </div>
+        <div className="op-field">
+          <span className="op-field-label">{t('输入来源')}</span>
+          <SegmentedControl<MineruSource>
+            block
+            label={t('输入来源')}
+            value={mineruSource}
+            onChange={setMineruSource}
+            options={[
+              { value: 'project', label: t('从当前项目编译'), icon: 'file-text' },
+              { value: 'upload', label: t('上传 PDF'), icon: 'upload' },
+            ]}
+          />
         </div>
       )}
 
       {/* Source file selection — shown for legacy mode or MinerU project mode */}
       {(transferMode === 'legacy' || (transferMode === 'mineru' && mineruSource === 'project')) && (
-        <div className="field">
-          <label>{t('源文件')}</label>
-          <div className="ios-select-wrapper" ref={sourceRef}>
-            <button className="ios-select-trigger" onClick={() => setSourceDropdownOpen(!sourceDropdownOpen)}>
-              <span>{sourceMainFile || t('选择源文件...')}</span>
-              {chevronSvg(sourceDropdownOpen)}
-            </button>
-            {sourceDropdownOpen && (
-              <div className="ios-dropdown dropdown-down">
-                {sourceFiles.map(f => (
-                  <div
-                    key={f}
-                    className={`ios-dropdown-item ${sourceMainFile === f ? 'active' : ''}`}
-                    onClick={() => { setSourceMainFile(f); setSourceDropdownOpen(false); }}
-                  >
-                    {f}
-                    {sourceMainFile === f && checkSvg}
-                  </div>
-                ))}
-                {sourceFiles.length === 0 && (
-                  <div className="ios-dropdown-item" style={{ color: 'var(--muted)', pointerEvents: 'none' }}>
-                    {t('未找到 .tex 文件')}
-                  </div>
-                )}
-              </div>
-            )}
-          </div>
+        <div className="op-field">
+          <label className="op-field-label" htmlFor="tp-source">{t('源文件')}</label>
+          <Select
+            id="tp-source"
+            value={sourceMainFile}
+            options={sourceOptions}
+            onChange={setSourceMainFile}
+            placeholder={sourceFiles.length === 0 ? t('未找到 .tex 文件') : t('选择源文件...')}
+            disabled={sourceFiles.length === 0}
+            icon="file-text"
+          />
         </div>
       )}
 
       {/* PDF upload — shown for MinerU upload mode */}
       {transferMode === 'mineru' && mineruSource === 'upload' && (
-        <div className="field">
-          <label>{t('上传 PDF 文件')}</label>
+        <div className="op-field">
+          <label className="op-field-label" htmlFor="tp-pdf">{t('上传 PDF 文件')}</label>
           <input
             ref={pdfInputRef}
             type="file"
             accept=".pdf"
-            style={{ display: 'none' }}
+            hidden
             onChange={e => {
               const file = e.target.files?.[0];
               if (file) setUploadedPdf(file);
             }}
           />
-          <button
-            className="btn"
-            style={{ width: '100%', fontSize: 12, marginBottom: 4 }}
+          <Button
+            id="tp-pdf"
+            className="tp-file"
+            icon={uploadedPdf ? 'file' : 'upload'}
+            block
             onClick={() => pdfInputRef.current?.click()}
           >
-            {uploadedPdf ? uploadedPdf.name : t('选择 PDF 文件...')}
-          </button>
+            <span>{uploadedPdf ? uploadedPdf.name : t('选择 PDF 文件...')}</span>
+          </Button>
         </div>
       )}
 
-      {/* Target template selection */}
-      <div className="field">
-        <label>{t('目标模板')}</label>
-        <div className="ios-select-wrapper" ref={templateRef}>
-          <button className="ios-select-trigger" onClick={() => setTemplateDropdownOpen(!templateDropdownOpen)}>
-            <span>{selectedTemplateName || t('选择目标模板...')}</span>
-            {chevronSvg(templateDropdownOpen)}
-          </button>
-          {templateDropdownOpen && (
-            <div className="ios-dropdown dropdown-down">
-              {templates.map(tmpl => (
-                <div
-                  key={tmpl.id}
-                  className={`ios-dropdown-item ${targetTemplateId === tmpl.id ? 'active' : ''}`}
-                  onClick={() => { setTargetTemplateId(tmpl.id); setTemplateDropdownOpen(false); }}
-                >
-                  {tmpl.label}
-                  {targetTemplateId === tmpl.id && checkSvg}
-                </div>
-              ))}
-              {templates.length === 0 && (
-                <div className="ios-dropdown-item" style={{ color: 'var(--muted)', pointerEvents: 'none' }}>
-                  {t('暂无可选模板')}
-                </div>
-              )}
-            </div>
-          )}
+      <div className="tp-grid">
+        {/* Target template selection */}
+        <div className="op-field">
+          <label className="op-field-label" htmlFor="tp-template">{t('目标模板')}</label>
+          <Select
+            id="tp-template"
+            value={targetTemplateId}
+            options={templateOptions}
+            onChange={setTargetTemplateId}
+            placeholder={templates.length === 0 ? t('暂无可选模板') : t('选择目标模板...')}
+            disabled={templates.length === 0}
+          />
         </div>
-      </div>
 
-      {/* Engine selection */}
-      <div className="field">
-        <label>{t('编译引擎')}</label>
-        <div className="ios-select-wrapper" ref={engineRef}>
-          <button className="ios-select-trigger" onClick={() => setEngineDropdownOpen(!engineDropdownOpen)}>
-            <span>{engine}</span>
-            {chevronSvg(engineDropdownOpen)}
-          </button>
-          {engineDropdownOpen && (
-            <div className="ios-dropdown dropdown-down">
-              {ENGINES.map(eng => (
-                <div
-                  key={eng}
-                  className={`ios-dropdown-item ${engine === eng ? 'active' : ''}`}
-                  onClick={() => { setEngine(eng); setEngineDropdownOpen(false); }}
-                >
-                  {eng}
-                  {engine === eng && checkSvg}
-                </div>
-              ))}
-            </div>
-          )}
+        {/* Engine selection */}
+        <div className="op-field">
+          <label className="op-field-label" htmlFor="tp-engine">{t('编译引擎')}</label>
+          <Select id="tp-engine" value={engine} options={engineOptions} onChange={setEngine} />
         </div>
       </div>
 
       {/* Layout check toggle */}
-      <label style={{ fontSize: 12, display: 'flex', alignItems: 'center', gap: 6, marginBottom: 12 }}>
+      <label className="home-check">
         <input type="checkbox" checked={layoutCheck} onChange={e => setLayoutCheck(e.target.checked)} />
         {t('启用排版检查 (VLM)')}
       </label>
 
       {/* MinerU API config — shown only in MinerU mode */}
       {transferMode === 'mineru' && (
-        <div style={{ marginBottom: 12 }}>
-          <div className="field">
-            <label>MinerU API</label>
-            <div className="ios-select-wrapper">
-              <input
-                type="text"
-                className="ios-select-trigger"
-                placeholder="https://mineru.net/api/v4"
-                value={mineruApiBase}
-                onChange={e => setMineruApiBase(e.target.value)}
-                style={{ paddingRight: 12 }}
-              />
-            </div>
+        <div className="tp-grid">
+          <div className="op-field">
+            <label className="op-field-label" htmlFor="tp-mineru-api">MinerU API</label>
+            <input
+              id="tp-mineru-api"
+              type="text"
+              className="op-input"
+              placeholder="https://mineru.net/api/v4"
+              value={mineruApiBase}
+              onChange={e => setMineruApiBase(e.target.value)}
+              autoComplete="off"
+            />
           </div>
-          <div className="field">
-            <label>MinerU Token</label>
-            <div className="ios-select-wrapper">
-              <input
-                type="password"
-                className="ios-select-trigger"
-                placeholder={t('输入 MinerU API Token...')}
-                value={mineruToken}
-                onChange={e => setMineruToken(e.target.value)}
-                style={{ paddingRight: 12 }}
-              />
-            </div>
+          <div className="op-field">
+            <label className="op-field-label" htmlFor="tp-mineru-token">MinerU Token</label>
+            <input
+              id="tp-mineru-token"
+              type="password"
+              className="op-input"
+              placeholder={t('输入 MinerU API Token...')}
+              value={mineruToken}
+              onChange={e => setMineruToken(e.target.value)}
+              autoComplete="off"
+            />
           </div>
         </div>
       )}
@@ -472,36 +372,35 @@ export default function TransferPanel({ projectId, onJobUpdate }: TransferPanelP
       {/* LLM Config — managed in header settings */}
 
       {/* Start button */}
-      <button
-        className="btn primary"
-        style={{ width: '100%', marginBottom: 12 }}
+      <Button
+        variant="primary"
+        icon="arrow-left-right"
+        block
+        loading={running}
         disabled={!canStart}
         onClick={handleStart}
       >
         {running ? t('转换中...') : t('开始转换')}
-      </button>
+      </Button>
 
       {/* Status */}
       {status !== 'idle' && (
-        <div style={{ fontSize: 12, marginBottom: 8 }}>
-          <strong>{t('状态')}:</strong> {status}
+        <div className="tp-status" role="status">
+          <span>{t('状态')}</span>
+          <Badge tone={statusTone} icon={running ? 'loader' : undefined} spin={running}>{status}</Badge>
         </div>
       )}
 
       {/* Error */}
       {error && (
-        <div style={{ fontSize: 12, color: '#d32f2f', marginBottom: 8 }}>{error}</div>
+        <p className="tp-error" role="alert"><Icon name="alert-circle" /><span>{error}</span></p>
       )}
 
       {/* Progress log */}
       {progressLog.length > 0 && (
-        <div style={{
-          fontSize: 11, fontFamily: 'monospace',
-          background: 'rgba(120, 98, 83, 0.06)', borderRadius: 8,
-          padding: 8, maxHeight: 300, overflowY: 'auto' as const,
-        }}>
+        <div className="tp-log">
           {progressLog.map((line, i) => (
-            <div key={i} style={{ marginBottom: 2 }}>{line}</div>
+            <div key={i}>{line}</div>
           ))}
         </div>
       )}

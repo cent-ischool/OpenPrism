@@ -16,15 +16,15 @@ const DICT = {
 export function getLang(req) {
   const header = req?.headers?.['x-lang'] || req?.headers?.['accept-language'] || '';
   const raw = Array.isArray(header) ? header[0] : header;
-  if (typeof raw === 'string' && raw.toLowerCase().includes('en')) {
-    return 'en-US';
+  if (typeof raw === 'string' && raw.toLowerCase().includes('zh')) {
+    return 'zh-CN';
   }
-  return 'zh-CN';
+  return 'en-US';
 }
 
 export function t(lang, key, params = {}) {
-  const bucket = DICT[lang] || DICT['zh-CN'];
-  const template = bucket[key] || DICT['zh-CN'][key] || key;
+  const bucket = DICT[lang] || DICT['en-US'];
+  const template = bucket[key] || DICT['en-US'][key] || key;
   return template.replace(/\{\{(\w+)\}\}/g, (_, token) => {
     const value = params[token];
     return value === undefined || value === null ? '' : String(value);
