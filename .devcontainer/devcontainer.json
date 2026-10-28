@@ -3,13 +3,20 @@
   "build": {
     "dockerfile": "Dockerfile"
   },
+  "features": {
+    "ghcr.io/devcontainers/features/docker-in-docker:2": {}
+  },
   "postCreateCommand": "sudo chown -R node:node /home/node/.claude && npm install",
   // "initializeCommand": "test -f .env || cp .env.sample .env",
   "runArgs": ["--env-file", "${localWorkspaceFolder}/.env"],
-  "forwardPorts": [5173, 8787],
+  "forwardPorts": [5173, 8787, 8000, 5432, 6379, 3900],
   "portsAttributes": {
     "5173": { "label": "Frontend" },
-    "8787": { "label": "Backend" }
+    "8787": { "label": "Backend (Node)" },
+    "8000": { "label": "API (Django)" },
+    "5432": { "label": "Postgres" },
+    "6379": { "label": "Redis" },
+    "3900": { "label": "Garage S3" }
   },
   "mounts": [
     "source=claude-config-${devcontainerId},target=/home/node/.claude,type=volume"

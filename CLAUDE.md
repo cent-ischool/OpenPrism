@@ -16,6 +16,11 @@ npm run dev:frontend       # frontend only — vite dev server
 npm run build               # vite build (frontend only; backend is plain Node, no build step)
 npm run preview              # vite preview of the built frontend
 
+# Data services (Postgres 5432, Redis 6379, Garage S3 3900) via docker-in-docker; see deploy/compose/
+npm run infra:up      # start postgres + redis + garage and wait until healthy
+npm run infra:init    # one-time/idempotent: Garage layout, bucket, access key (reads S3_* from .env)
+npm run infra:down    # stop (volumes are kept)
+
 # Tunnels (expose local server publicly for remote collaboration)
 npm run tunnel        # localtunnel
 npm run tunnel:cf     # Cloudflare Tunnel (requires cloudflared installed)
