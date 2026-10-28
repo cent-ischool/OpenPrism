@@ -1,0 +1,38 @@
+{
+  // Launch configurations for running OpenPrism (works in the devcontainer).
+  // Use the "OpenPrism: Dev (Full Stack)" compound to start backend + frontend together.
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "OpenPrism: Backend",
+      "type": "node",
+      "request": "launch",
+      "cwd": "${workspaceFolder}",
+      "runtimeExecutable": "node",
+      "program": "${workspaceFolder}/apps/backend/src/index.js",
+      "console": "integratedTerminal",
+      "skipFiles": ["<node_internals>/**"]
+    },
+    {
+      "name": "OpenPrism: Frontend (Vite)",
+      "type": "node",
+      "request": "launch",
+      "cwd": "${workspaceFolder}",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev:frontend"],
+      "console": "integratedTerminal",
+      "serverReadyAction": {
+        "pattern": "Local:\\s+(https?://\\S+)",
+        "uriFormat": "%s",
+        "action": "openExternally"
+      }
+    }
+  ],
+  "compounds": [
+    {
+      "name": "OpenPrism: Dev (Full Stack)",
+      "configurations": ["OpenPrism: Backend", "OpenPrism: Frontend (Vite)"],
+      "stopAll": true
+    }
+  ]
+}

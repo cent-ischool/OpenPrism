@@ -305,7 +305,30 @@ OpenPrism requires a LaTeX engine to generate PDFs. Choose one of the following 
 
 > **Note**: TexLive full installation is ~5-7GB, Tectonic is lighter but with fewer features. TexLive is recommended for Linux servers.
 
-### 📦 Install & Run
+### 🐳 Dev Container (Recommended)
+
+The repo ships with a [Dev Container](https://containers.dev/) that preinstalls Node 20, a LaTeX engine (`latexmk` + TexLive packages), the GitHub CLI, and the Claude Code CLI — so you don't need to install any of the prerequisites above manually.
+
+**Requirements**: [Docker](https://www.docker.com/) + [VS Code](https://code.visualstudio.com/) with the [Dev Containers extension](https://marketplace.visualstudio.com/items?itemName=ms-vscode-remote.remote-containers).
+
+```bash
+# 1. Clone repository
+git clone https://github.com/OpenDCAI/OpenPrism.git
+cd OpenPrism
+
+# 2. (Optional) create your .env so LLM / MinerU settings are loaded
+cp .env.sample .env   # then edit as needed
+```
+
+3. Open the folder in VS Code and run **Dev Containers: Reopen in Container** (Command Palette, `F1`). The first build installs TexLive and runs `npm install` automatically via `postCreateCommand`.
+
+4. **Run the app** — two options:
+   - **One-click (VS Code)**: open the **Run and Debug** panel (`Ctrl/Cmd + Shift + D`), select **OpenPrism: Dev (Full Stack)**, and press ▶. This starts the backend and frontend together via `.vscode/launch.json`.
+   - **Terminal**: run `npm run dev` to start frontend + backend concurrently.
+
+Ports **5173** (frontend) and **8787** (backend) are auto-forwarded, so http://localhost:5173 opens on your host machine.
+
+### 📦 Install & Run (without Dev Container)
 
 #### Development Deployment
 

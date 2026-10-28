@@ -1,0 +1,28 @@
+{
+  "name": "OpenPrism",
+  "build": {
+    "dockerfile": "Dockerfile"
+  },
+  "postCreateCommand": "sudo chown -R node:node /home/node/.claude && npm install",
+  // "initializeCommand": "test -f .env || cp .env.sample .env",
+  "runArgs": ["--env-file", "${localWorkspaceFolder}/.env"],
+  "forwardPorts": [5173, 8787],
+  "portsAttributes": {
+    "5173": { "label": "Frontend" },
+    "8787": { "label": "Backend" }
+  },
+  "mounts": [
+    "source=claude-config-${devcontainerId},target=/home/node/.claude,type=volume"
+  ],
+  "remoteUser": "node",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "anthropic.claude-code",
+        "GitHub.vscode-pull-request-github",
+        "dbaeumer.vscode-eslint",
+        "James-Yu.latex-workshop"
+      ]
+    }
+  }
+}
