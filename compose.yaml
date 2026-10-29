@@ -60,6 +60,7 @@ services:
       DJANGO_DEBUG: "1"
       DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:-dev-insecure-change-me}
       DJANGO_ALLOWED_HOSTS: ${DJANGO_ALLOWED_HOSTS:-localhost,127.0.0.1,api}
+      TRUSTED_PROXY_COUNT: "1" # the nginx web container: rate limits must key on the real client, not on it
       DATABASE_URL: postgres://${POSTGRES_USER:-openprism}:${POSTGRES_PASSWORD:-openprism}@postgres:5432/${POSTGRES_DB:-openprism}
       REDIS_URL: redis://redis:6379/0
       S3_ENDPOINT_URL: http://garage:3900

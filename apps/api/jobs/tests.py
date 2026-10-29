@@ -1,11 +1,15 @@
+import json
 import os
 import shutil
 import struct
+import subprocess
+import sys
 import tempfile
 import zlib
 from datetime import timedelta
 from unittest import mock, skipUnless
 
+from django.conf import settings
 from django.test import TestCase, override_settings
 from django.utils import timezone
 
@@ -13,6 +17,8 @@ from common import secrets as job_secrets
 from projects import files, storage
 from projects.models import Project
 from projects.test_api import ApiBase, client_for, make_user
+
+from config.hardening import make_undumpable
 
 from . import compile as tex
 from . import tasks
@@ -224,3 +230,97 @@ class RealCompileTests(TestCase):
         tex.compile_project(self.project, 'main.tex', 'pdflatex')
         after = {p for p in os.listdir(tempfile.gettempdir()) if p.startswith('openprism-compile-')}
         self.assertEqual(before, after)
+
+
+class ScrubbedEnvironmentTests(TestCase):
+    """No credentials may reach the processes that run user documents."""
+
+    def test_tex_env_is_an_allow_list(self):
+        secrets = {'DATABASE_URL': 'postgres://u:pw@db/x', 'DJANGO_SECRET_KEY': 'k', 'S3_SECRET_ACCESS_KEY': 's3',
+                   'REDIS_URL': 'redis://:pw@r', 'OPENPRISM_LLM_API_KEY': 'sk-x', 'PATH': '/usr/bin', 'LANG': 'C.UTF-8'}
+        with mock.patch.dict(os.environ, secrets):
+            env = tex._tex_env('/tmp/work')
+        self.assertEqual(env['PATH'], '/usr/bin')
+        self.assertEqual(env['HOME'], '/tmp/work')
+        self.assertEqual((env['shell_escape'], env['openin_any'], env['openout_any']), ('f', 'p', 'p'))
+        self.assertEqual(tex._tex_env('/tmp/work', 'lualatex')['openin_any'], 'a')   # luaotfload cannot run in paranoid mode
+        blob = json.dumps(env)
+        for secret in ('postgres://', 'pw@', 's3', 'sk-x', 'DJANGO_SECRET_KEY'):
+            self.assertNotIn(secret, blob)
+
+    def test_run_command_requires_an_explicit_environment(self):
+        with self.assertRaises(TypeError):
+            tex.run_command(['true'], '/tmp', tex.LogBuffer())  # would have inherited the worker's secrets
+
+    @skipUnless(os.path.isdir('/proc/self'), 'needs Linux /proc')
+    def test_undumpable_process_hides_its_environment_from_children(self):
+        code = ("import os, subprocess; from config.hardening import make_undumpable; os.environ['SECRET_PROBE'] = 'hunter2';"
+                "print('set', make_undumpable());"
+                "r = subprocess.run(['cat', f'/proc/{os.getpid()}/environ'], capture_output=True);"
+                "print('rc', r.returncode, 'leaked', b'hunter2' in r.stdout)")
+        out = subprocess.run([sys.executable, '-c', code], capture_output=True, text=True, cwd=str(settings.BASE_DIR),
+                             env={**os.environ, 'DJANGO_SETTINGS_MODULE': 'config.settings'}).stdout
+        self.assertIn('set True', out)
+        self.assertIn('leaked False', out)
+        self.assertNotIn('rc 0', out)  # the read was refused, not merely empty
+
+
+@skipUnless(HAS_TEX, 'needs TeX Live: docker compose run --rm worker-tex python manage.py test jobs')
+class HostileDocumentTests(TestCase):
+    """Documents written by an attacker who can edit a project (an invited guest is enough)."""
+
+    def setUp(self):
+        user = make_user('attacker@example.com')
+        self.project = Project.objects.create(workspace=user.memberships.first().workspace, name='p')
+        self.addCleanup(files.delete_project_files, self.project)
+
+    def compile(self, tex_source, engine='pdflatex', extra=None):
+        files.write_text(self.project, 'main.tex', tex_source)
+        for path, content in (extra or {}).items():
+            files.write_text(self.project, path, content)
+        return tex.compile_project(self.project, 'main.tex', engine)
+
+    PROBE = (r'\documentclass{article}\begin{document}\makeatletter\newread\f'
+             r'\def\probe#1#2{\openin\f=#2\relax\ifeof\f\typeout{[#1] BLOCKED}\else\read\f to\l\typeout{[#1] READ: \meaning\l}\closein\f\fi}'
+             r'\probe{passwd}{/etc/passwd}\probe{environ}{/proc/self/environ}\probe{parent}{/proc/PPID/environ}\end{document}')
+
+    def test_tex_cannot_read_system_files_or_process_environments(self):
+        out = self.compile(self.PROBE.replace('PPID', str(os.getpid())))
+        probes = [l for l in out['log'].splitlines() if l.startswith('[') and ('READ' in l or 'BLOCKED' in l)]
+        self.assertTrue(probes, out['log'][-800:])
+        self.assertTrue(all('BLOCKED' in l for l in probes), probes)   # /etc/passwd, own and parent environ
+        self.assertNotIn('root:x', out['log'])
+
+    def test_project_files_are_still_readable(self):
+        out = self.compile(r'\documentclass{article}\begin{document}\input{part}\end{document}', extra={'part.tex': 'Included fine.'})
+        self.assertTrue(out['pdf'])
+
+    def test_latexmkrc_in_a_project_is_not_executed(self):
+        marker = os.path.join(tempfile.gettempdir(), f'openprism-rce-{os.getpid()}')
+        self.addCleanup(lambda: os.path.exists(marker) and os.remove(marker))
+        out = self.compile(DOC, engine='latexmk', extra={'latexmkrc': f'system("touch {marker}");\n', '.latexmkrc': f'system("touch {marker}");\n'})
+        self.assertFalse(os.path.exists(marker), 'a project latexmkrc ran code in the worker')
+        self.assertTrue(out['pdf'], out['log'][-500:])                # latexmk itself still works
+
+    def test_lua_cannot_read_the_workers_environment(self):
+        make_undumpable()  # what the Celery worker does at startup; this test process plays the worker
+        os.environ['OPENPRISM_PROBE_SECRET'] = 'hunter2-probe'
+        self.addCleanup(os.environ.pop, 'OPENPRISM_PROBE_SECRET', None)
+        out = self.compile('\\documentclass{article}\\begin{document}\n\\directlua{local e = io.open("/proc/%d/environ") '
+                           'if e then texio.write_nl("LUAENV " .. e:read("*a"):sub(1, 3000)) else texio.write_nl("LUABLOCKED") end}\n\\end{document}' % os.getpid(),
+                           engine='lualatex')
+        self.assertIn('LUABLOCKED', out['log'])
+        self.assertNotIn('hunter2-probe', out['log'])
+
+    def test_every_engine_still_compiles_under_the_restrictions(self):
+        for engine in ('pdflatex', 'xelatex', 'lualatex', 'latexmk'):
+            body = r'\documentclass{article}\usepackage{amsmath,graphicx}\begin{document}Hello $x^2$ \input{part}\end{document}'
+            out = self.compile(body, engine=engine, extra={'part.tex': 'included'})
+            self.assertTrue(out['pdf'], f"{engine}: {out['log'][-400:]}")
+
+    def test_biber_ignores_project_configuration(self):
+        files.write_text(self.project, 'refs.bib', '@book{k, author={A. Author}, title={A Title}, year={2020}, publisher={P}}')
+        out = self.compile('\\documentclass{article}\\usepackage[backend=biber]{biblatex}\\addbibresource{refs.bib}\\begin{document}See \\cite{k}.\\printbibliography\\end{document}',
+                           extra={'biber.conf': '<this is not valid biber configuration>'})
+        self.assertIn('This is Biber', out['log'])
+        self.assertTrue(out['pdf'], out['log'][-600:])

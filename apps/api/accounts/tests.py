@@ -1,4 +1,4 @@
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from rest_framework.test import APIClient
 
 from projects.models import Membership
@@ -94,3 +94,33 @@ class SessionTests(TestCase):
             codes = [self.client.post('/api/auth/login', {'email': 'mixed@example.com', 'password': 'bad'}, format='json').status_code
                      for _ in range(5)]
         self.assertEqual(codes, [401, 401, 401, 429, 429])
+
+
+class BehindProxyTests(TestCase):
+    """Rate limits must key on the real client, not on the reverse proxy that every request arrives through."""
+
+    def attempt(self, client_ip):
+        return APIClient().post('/api/auth/login', {'email': 'x@example.com', 'password': 'bad'}, format='json',
+                                HTTP_X_FORWARDED_FOR=client_ip, REMOTE_ADDR='10.0.0.1').status_code  # 10.0.0.1 = the proxy
+
+    def run_scenario(self, proxies):
+        from unittest import mock
+        from django.conf import settings
+        from django.core.cache import cache
+        from rest_framework.throttling import ScopedRateThrottle
+        cache.clear()
+        self.addCleanup(cache.clear)
+        with override_settings(REST_FRAMEWORK={**settings.REST_FRAMEWORK, 'NUM_PROXIES': proxies}), \
+                mock.patch.object(ScopedRateThrottle, 'THROTTLE_RATES', {'auth': '2/min'}):
+            first = [self.attempt('203.0.113.1') for _ in range(3)]
+            second = self.attempt('203.0.113.2')
+        return first, second
+
+    def test_with_a_trusted_proxy_each_client_has_its_own_budget(self):
+        first, second = self.run_scenario(proxies=1)
+        self.assertEqual(first, [401, 401, 429])
+        self.assertEqual(second, 401)  # a different person is not locked out by the first one's failures
+
+    def test_without_proxy_awareness_everyone_shares_the_proxy_budget(self):
+        first, second = self.run_scenario(proxies=0)
+        self.assertEqual(second, 429)  # the failure mode TRUSTED_PROXY_COUNT exists to prevent

@@ -26,6 +26,9 @@ TESTING = 'test' in sys.argv
 
 # No insecure default: a deployment that forgets the secret must fail to start.
 SECRET_KEY = env('DJANGO_SECRET_KEY', 'test-only-secret' if TESTING else None, required=True)
+if env_bool('DJANGO_BEHIND_TLS_PROXY', False):
+    SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')  # the ingress terminates TLS
+
 ALLOWED_HOSTS = [h for h in env('DJANGO_ALLOWED_HOSTS', 'localhost,127.0.0.1').split(',') if h]
 
 INSTALLED_APPS = [
@@ -118,6 +121,7 @@ REST_FRAMEWORK = {
         'common.uploads.PathMultiPartParser',
     ],
     'DEFAULT_RENDERER_CLASSES': ['rest_framework.renderers.JSONRenderer'],
+    'NUM_PROXIES': int(env('TRUSTED_PROXY_COUNT', '0')),  # reverse proxies in front of the API: rate limits key on the real client
     'DEFAULT_THROTTLE_CLASSES': ['rest_framework.throttling.ScopedRateThrottle'],  # only views that set throttle_scope
     'DEFAULT_THROTTLE_RATES': {'auth': env('AUTH_RATE_LIMIT', '10000/min' if TESTING else '20/min')},
     'EXCEPTION_HANDLER': 'common.exceptions.ok_error_handler',
@@ -165,6 +169,7 @@ MINERU_TOKEN = env('OPENPRISM_MINERU_TOKEN', '')
 MINERU_POLL_INTERVAL_SECONDS = float(env('MINERU_POLL_INTERVAL_SECONDS', '3'))
 MINERU_MAX_POLL_ATTEMPTS = int(env('MINERU_MAX_POLL_ATTEMPTS', '200'))
 PLOT_TIMEOUT_SECONDS = int(env('PLOT_TIMEOUT_SECONDS', '60'))
+TEX_CACHE_DIR = env('TEX_CACHE_DIR', '/tmp/openprism-tex-cache')  # font/format caches shared by compiles in one worker
 COMPILE_TIMEOUT_SECONDS = int(env('COMPILE_TIMEOUT_SECONDS', '120'))  # per command (each pass / bibtex)
 COMPILE_MAX_FILE_BYTES = int(env('COMPILE_MAX_FILE_BYTES', str(200 * 1024 * 1024)))
 JOB_RUNNING_STALE_MINUTES = int(env('JOB_RUNNING_STALE_MINUTES', '10'))

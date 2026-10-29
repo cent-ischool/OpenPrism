@@ -47,7 +47,7 @@ def build_command(engine, out_dir, main_file):
     if engine in MULTI_PASS_ENGINES:
         return [engine, '-interaction=nonstopmode', f'-output-directory={out_dir}', main_file]
     if engine == 'latexmk':
-        return ['latexmk', '-pdf', '-interaction=nonstopmode', f'-outdir={out_dir}', main_file]
+        return ['latexmk', '-norc', '-pdf', '-interaction=nonstopmode', f'-outdir={out_dir}', main_file]  # -norc: a project's latexmkrc is Perl code
     if engine == 'tectonic':
         return ['tectonic', '--outdir', str(out_dir), main_file]
     raise CompileError(f'Unsupported engine: {engine}')
@@ -59,14 +59,14 @@ def _limit_child():
     resource.setrlimit(resource.RLIMIT_FSIZE, (settings.COMPILE_MAX_FILE_BYTES,) * 2)
 
 
-def run_command(args, cwd, log, env=None, timeout=None):
+def run_command(args, cwd, log, env, timeout=None):
     """Run one command, appending its output to `log`. Returns the exit code (-1 on timeout).
 
     Raises FileNotFoundError when the executable does not exist.
     """
     timeout = timeout or settings.COMPILE_TIMEOUT_SECONDS
     proc = subprocess.Popen(
-        args, cwd=cwd, env=env or os.environ.copy(), stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        args, cwd=cwd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
         stdin=subprocess.DEVNULL, start_new_session=True, preexec_fn=_limit_child)
     try:
         out, _ = proc.communicate(timeout=timeout)
@@ -97,10 +97,28 @@ def materialise(project, root):
             target.write_bytes(storage.get_bytes(row.s3_key))
 
 
-def _tex_env():
-    env = os.environ.copy()
-    # Never allow \write18; keep TeX from writing outside the working tree.
-    env.update({'shell_escape': 'f', 'openout_any': 'p'})
+SAFE_ENV = ('PATH', 'LANG', 'LC_ALL', 'LC_CTYPE', 'TZ')
+
+
+def _tex_env(home, engine='pdflatex'):
+    """The environment for TeX and friends: no credentials, and file access limited to the project.
+
+    Deliberately an allow-list. The worker's own environment holds the database and storage secrets, and a
+    document can print whatever its process can read (including its own /proc/self/environ).
+    """
+    cache = Path(settings.TEX_CACHE_DIR)
+    cache.mkdir(parents=True, exist_ok=True)
+    env = {k: os.environ[k] for k in SAFE_ENV if k in os.environ}
+    env.update({
+        'HOME': str(home), 'TMPDIR': str(home),  # per-compile and deleted with it
+        'XDG_CACHE_HOME': str(cache / 'xdg'), 'TEXMFVAR': str(cache / 'texmf-var'), 'TEXMFCONFIG': str(cache / 'texmf-config'),
+        'shell_escape': 'f',   # no \write18
+        'openout_any': 'p',    # paranoid: write only inside the working tree / output directory
+        # paranoid: read only from the working tree and the TeX trees (not /etc, /proc, ...). LuaTeX's font loader
+        # cannot run in this mode, and its Lua io.open reads any file regardless, so it gets no TeX-level restriction:
+        # for lualatex the protection is the empty environment and the non-dumpable parent (see config/hardening.py).
+        'openin_any': 'a' if engine == 'lualatex' else 'p',
+    })
     return env
 
 
@@ -123,7 +141,7 @@ def compile_project(project, main_file, engine, progress=lambda msg: None):
         out_dir.mkdir(parents=True)
         cmd = build_command(engine, out_dir, main_file)
         base = Path(main_file).stem
-        env = _tex_env()
+        env = _tex_env(work, engine)
 
         try:
             progress(f'Running {engine}')
@@ -148,7 +166,7 @@ def _bibliography_and_passes(cmd, src, out_dir, main_file, base, env, log, progr
     bib_cmd = 'biber' if use_biber else 'bibtex'
     bib_env = {**env, 'BIBINPUTS': f'{src}:', 'BSTINPUTS': f'{src}:'}
     # cwd=out_dir with a relative base name, because openout_any=p blocks writes to absolute paths.
-    bib_args = [bib_cmd, f'--input-directory={src}', base] if use_biber else [bib_cmd, base]
+    bib_args = [bib_cmd, '--noconf', f'--input-directory={src}', base] if use_biber else [bib_cmd, base]  # --noconf: ignore project biber.conf
     progress(f'Running {bib_cmd}')
     try:
         run_command(bib_args, out_dir, log, bib_env)

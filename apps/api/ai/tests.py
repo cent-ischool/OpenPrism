@@ -280,6 +280,20 @@ class AiApiTests(ApiBase):
         self.assertNotIn('topsecret-s3', out['error'])
         self.assertNotIn('DJANGO_SECRET_KEY', out['error'])
 
+    @skipUnless(importlib.util.find_spec('matplotlib'), 'needs matplotlib')
+    @mock.patch.dict('os.environ', {'S3_SECRET_ACCESS_KEY': 'topsecret-s3-parent'})
+    def test_plot_code_cannot_read_its_parents_environment_through_proc(self):
+        from config.hardening import make_undumpable
+        make_undumpable()  # the Celery worker does this at startup; this test process plays the worker
+        table = '\\begin{tabular}{lr}A & 1 \\\\ B & 2\\end{tabular}'
+        # `open` is not a forbidden *name* when reached as an attribute, so the AST check alone does not stop this:
+        code = ("b = plt.sys.modules['builtins']; o = plt.sys.modules['os']\n"
+                "raise ValueError(b.open('/proc/%d/environ' % o.getppid(), 'rb').read()[:400].decode('latin-1'))")
+        out = plot.render(table, code)
+        self.assertFalse(out['ok'])
+        self.assertIn('Permission', out['error'])               # refused by the kernel, not merely empty
+        self.assertNotIn('topsecret-s3-parent', out['error'])
+
     def test_wait_timeout_returns_job_id_and_status_endpoint_serves_result(self):
         fake = self.fake({'content': 'late'})
         with override_settings(AI_WAIT_SECONDS=0), mock.patch('ai.views.run_ai_job.delay'):
