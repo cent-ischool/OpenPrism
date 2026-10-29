@@ -11,10 +11,11 @@ instead of adding their own buttons, dropdowns, icons or colours.
 | `tokens.css` | Colour (light + dark), type, spacing, radius, motion tokens and the `op-` component classes. Loaded once in `apps/frontend/src/main.tsx`. |
 | `Icon.tsx` / `iconPaths.ts` | `<Icon name="…" />` — the only icon source. One outline family, 24px grid, 1.75 stroke. |
 | `Logo.tsx` | `<Logo />` and `<LogoMark />` (the prism mark, also `apps/frontend/public/favicon.svg`). |
-| `ui.tsx` | `Button`, `IconButton`, `Badge`, `Tag`, `Avatar`, `Menu` / `MenuButton`, `Select`, `SegmentedControl`, `Modal`, `PanelHeader`, `EmptyState`. |
-| `AppTopBar.tsx` | Shared top bar: logo · workspace switcher › breadcrumbs ……… actions · account menu. |
+| `ui.tsx` | `Button`, `IconButton`, `Badge`, `Tag`, `Avatar`, `Menu` / `MenuButton`, `Select`, `SegmentedControl`, `Modal`, `PanelHeader`, `EmptyState`, `FieldError` (inline validation message under a field). |
+| `AppTopBar.tsx` | Shared top bar: logo · workspace switcher › breadcrumbs ……… actions · account menu. Invite-link guests get a static label instead of the switcher and a different account menu. |
+| `AuthScreen.tsx` | Full-screen sign-in / create-account form (validation, show-password toggle, error banner). Takes `mode`, `onModeChange`, an async `onSubmit` that rejects with a displayable `Error`, and an optional `notice`. |
 | `theme.ts` | `useTheme()` — light / dark / system, stored in `localStorage`. |
-| `workspace.tsx` | **Mock** users, workspaces, roles and project→workspace mapping. Browser-only; swap for real APIs later. |
+| `workspace.tsx` | The contract between the UI and the data behind accounts and workspaces: types, `WorkspaceContextValue`, `<WorkspaceProvider value={…}>` and `useWorkspace()`. It knows nothing about the API; `apps/frontend/src/auth` builds the real value. Actions are async and reject with an `Error` whose message is safe to show. |
 
 ## Rules of thumb
 
@@ -25,6 +26,14 @@ instead of adding their own buttons, dropdowns, icons or colours.
 - **Choices:** use `Select` for picking a value from a list, and `SegmentedControl` for switching modes within the same view (Chat / Agent, Editor / Split / PDF).
 - **Menus:** each menu lives on the object it acts on (workspace, project, file, compile, account). Destructive items go last, followed by `…` when they open a confirmation.
 - **Panels:** the editor uses collapsible, resizable side panels. A `PanelHeader` holds the title, up to three icon actions, and Collapse.
+- **Forms:** a `label` for every input, `aria-invalid` plus a `FieldError` (linked with `aria-describedby`) for problems, validate on blur and on submit, and show server errors in a banner above the form.
 - **Copy:** use sentence case and name the object, saying what happened or what to do next. Wrap new strings in `t('English text')` and add a `zh-CN` translation.
 
-The static reference — the style guide and clickable prototype — lives in the Open Design project as `design-system.html` and `index.html`.
+## Reference
+
+`reference/` holds the static HTML exports from the design phase:
+
+- `reference/design-system.html` — living style guide: foundations, the icon set, components with their states, layout and menu rules, roles, and copy guidelines.
+- `reference/index.html` — clickable prototype of the workspace home and the editor shell with collapsible panels (mock data).
+
+Open either file directly in a browser; they share `openprism.css` and `icons.js` and aren't part of the Vite build. `tokens.css` is the source of truth if the two ever drift apart.

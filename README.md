@@ -123,462 +123,40 @@ OpenPrism is a local-first LaTeX + AI workspace for academic writing, optimized 
 
 ### ⚙️ Configuration
 
-- **LLM Endpoint**: OpenAI-compatible, supports custom base_url
-- **Local storage**: settings saved to browser localStorage
-- **TexLive config**: customizable TexLive resources
-- **Language switch**: toggle 中文/English in the top bar
-
-### 🔍 Search & Reading
-
-- **WebSearch**: online search with summaries
-- **PaperSearch**: academic paper search with citation info
-
-### 📊 Charts & Recognition
-
-- **Table-to-chart**: generate charts directly from tables
-- **Smart recognition**: formulas and charts auto-detected
-
-### 📝 Peer Review
-
-- **AI Quality Check**: automated paper quality assessment
-- **Full Review Report**: generate detailed reviewer-style review comments
-- **Consistency Check**: terminology and symbol consistency detection
-- **Missing Citations**: find statements that need citations
-- **Compile Log Summary**: summarize compile errors and fix suggestions
-
-### 👥 Real-time Collaboration
-
-- **Multi-user editing**: multiple users edit the same document simultaneously with real-time sync
-- **Cursor & selection sync**: each user's cursor displayed in a distinct color, visible in real time
-- **Online user list**: collaboration panel shows currently connected users and their status
-- **Invite to collaborate**: invite others via link or token to join the editing session
-
----
-
-## 🎨 Showcase
-
-### 🖥️ Three-Panel Workspace
-
-<div align="center">
-<br>
-<img src="static/三栏界面.png" alt="Three-panel workspace" width="90%"/>
-<br>
-<sub>✨ AI Assistant | LaTeX Editor | PDF Preview</sub>
-<br><br>
-</div>
-
-### ✍️ Editor View
-
-<div align="center">
-<br>
-<img src="static/编辑页面的界面.png" alt="Editor view" width="90%"/>
-<br>
-<sub>✨ Synchronized editing and preview</sub>
-<br><br>
-</div>
-
-### 🤖 Agent Mode
-
-<div align="center">
-<br>
-<img src="static/Agent模式.png" alt="Agent mode" width="85%"/>
-<br>
-<sub>✨ Generate diff suggestions for review</sub>
-<br><br>
-</div>
-
-### 🧪 One-Click Diagnose
-
-<div align="center">
-<br>
-<img src="static/一键诊断.png" alt="One-click diagnose" width="85%"/>
-<br>
-<sub>✨ Parse compile errors and jump to locations</sub>
-<br><br>
-</div>
-
-### 🌐 WebSearch
-
-<div align="center">
-<br>
-<img src="static/网络搜索.gif" alt="WebSearch" width="85%"/>
-<br>
-<sub>✨ Online search with concise summaries</sub>
-<br><br>
-</div>
-
-### 📄 PaperSearch
-
-<div align="center">
-<br>
-<img src="static/论文检索.gif" alt="PaperSearch" width="85%"/>
-<br>
-<sub>✨ Academic search and citation info</sub>
-<br><br>
-</div>
-
-### 📊 Table-to-Chart
-
-<div align="center">
-<br>
-<img src="static/图表生成.png" alt="Chart generation" width="85%"/>
-<br><sub>✨ Turn tables into charts in one step</sub>
-<br><br>
-</div>
-
-### 🧠 Formula/Chart Recognition
-
-<div align="center">
-<br>
-<img src="static/公式识别.png" alt="Formula recognition" width="85%"/>
-<br><sub>✨ Recognize structures for editable outputs</sub>
-<br><br>
-</div>
-
-### 🔧 AI Autocomplete
-
-<div align="center">
-<br>
-<img src="static/AI自动补全.gif" alt="AI autocomplete" width="85%"/>
-<br>
-<sub>✨ Option/Alt + / to trigger, Tab to accept</sub>
-<br><br>
-</div>
-
-### 📝 Peer Review
-
-<div align="center">
-<br>
-<img src="static/同行评审.png" alt="Peer Review" width="85%"/>
-<br>
-<sub>✨ AI Quality Check: Review Report / Consistency Check / Missing Citations / Compile Summary</sub>
-<br><br>
-</div>
-
-### 👥 Real-time Collaboration
-
-<div align="center">
-<br>
-<img src="static/协作.png" alt="Real-time Collaboration" width="85%"/>
-<br>
-<sub>✨ Multi-user real-time collaborative editing with cursor sync and online user management</sub>
-<br><br>
-</div>
-
----
-
-## 🚀 Quick Start
-
-### 📋 Requirements
-
-#### Basic Environment
-- **Node.js** >= 18.0.0
-- **npm** >= 9.0.0
-- **OS**: Windows / macOS / Linux
-
-#### LaTeX Compilation Environment (Required)
-
-OpenPrism requires a LaTeX engine to generate PDFs. Choose one of the following options based on your OS:
-
-**Option 1: TexLive (Recommended)**
-- **Linux (Ubuntu/Debian)**:
-  ```bash
-  sudo apt-get update
-  sudo apt-get install texlive-full
-  ```
-- **Linux (CentOS/RHEL)**:
-  ```bash
-  sudo yum install texlive texlive-*
-  ```
-- **macOS**:
-  ```bash
-  brew install --cask mactex
-  ```
-- **Windows**: Download [TexLive](https://www.tug.org/texlive/) installer
-
-**Option 2: Tectonic (Lightweight)**
-- **Linux/macOS**:
-  ```bash
-  curl --proto '=https' --tlsv1.2 -fsSL https://drop-sh.fullyjustified.net | sh
-  ```
-- **Windows**: Download [Tectonic](https://tectonic-typesetting.github.io/) installer
-
-> **Note**: TexLive full installation is ~5-7GB, Tectonic is lighter but with fewer features. TexLive is recommended for Linux servers.
-
-### 🐳 Dev Container (Recommended)
-
-The repo ships with a [Dev Container](https://containers.dev/) that preinstalls Node 20, a LaTeX engine (`latexmk` + TexLive packages), the GitHub CLI, and the Claude Code CLI — so you don't need to install any of the prerequisites above manually.
-
-**Requirements**: [Docker](https://www.docker.com/) + [VS Code](https://code.visualstudio.com/) with the [Dev Containers extension](https://marketplace.visualstudio.com/items?itemName=ms-vscode-remote.remote-containers).
+Everything is configured with environment variables in `.env` (see `.env.sample`; Docker Compose reads it). The most useful ones:
 
 ```bash
-# 1. Clone repository
-git clone https://github.com/OpenDCAI/OpenPrism.git
-cd OpenPrism
-
-# 2. (Optional) create your .env so LLM / MinerU settings are loaded
-cp .env.sample .env   # then edit as needed
-```
-
-3. Open the folder in VS Code and run **Dev Containers: Reopen in Container** (Command Palette, `F1`). The first build installs TexLive and runs `npm install` automatically via `postCreateCommand`.
-
-4. **Run the app** — two options:
-   - **One-click (VS Code)**: open the **Run and Debug** panel (`Ctrl/Cmd + Shift + D`), select **OpenPrism: Dev (Full Stack)**, and press ▶. This starts the backend and frontend together via `.vscode/launch.json`.
-   - **Terminal**: run `npm run dev` to start frontend + backend concurrently.
-
-Ports **5173** (frontend) and **8787** (backend) are auto-forwarded, so http://localhost:5173 opens on your host machine.
-
-### 📦 Install & Run (without Dev Container)
-
-#### Development Deployment
-
-```bash
-# 1. Clone repository
-git clone https://github.com/OpenDCAI/OpenPrism.git
-cd OpenPrism
-
-# 2. Install dependencies
-npm install
-
-# 3. Start dev server (frontend + backend)
-npm run dev
-```
-
-Access:
-- **Frontend**: http://localhost:5173
-- **Backend**: http://localhost:8787
-
-#### Production Deployment
-
-```bash
-# 1. Build frontend and backend
-npm run build
-
-# 2. Start production server
-npm start
-```
-
-#### Complete Linux Server Deployment Example
-
-```bash
-# 1. Install Node.js (Ubuntu example)
-curl -fsSL https://deb.nodesource.com/setup_18.x | sudo -E bash -
-sudo apt-get install -y nodejs
-
-# 2. Install TexLive
-sudo apt-get update
-sudo apt-get install -y texlive-full
-
-# 3. Verify installation
-node --version  # Should show >= 18.0.0
-pdflatex --version  # Should show TexLive version
-
-# 4. Clone and deploy project
-git clone https://github.com/OpenDCAI/OpenPrism.git
-cd OpenPrism
-npm install
-npm run build
-
-# 5. Configure environment variables (optional)
-cat > .env << EOF
+# AI features — used when the UI has no LLM settings of its own (users can also enter their own key in the app;
+# per-request keys are never stored by the server)
 OPENPRISM_LLM_ENDPOINT=https://api.openai.com/v1/chat/completions
 OPENPRISM_LLM_API_KEY=your-api-key
 OPENPRISM_LLM_MODEL=gpt-4o-mini
-OPENPRISM_DATA_DIR=/var/openprism/data
-PORT=8787
-EOF
+LLM_ALLOW_PRIVATE_ENDPOINTS=0          # 1 only to use a local model (Ollama, vLLM) on a private address
 
-# 6. Start service
-npm start
-
-# 7. Use PM2 for process management (recommended)
-sudo npm install -g pm2
-pm2 start npm --name "openprism" -- start
-pm2 save
-pm2 startup
-```
-
----
-
-## ⚙️ Configuration
-
-### Environment Variables
-
-Create a `.env` file in the project root (optional):
-
-```bash
-# LLM Configuration
-OPENPRISM_LLM_ENDPOINT=https://api.openai.com/v1/chat/completions
-OPENPRISM_LLM_API_KEY=your-api-key
-OPENPRISM_LLM_MODEL=gpt-4o-mini
-
-# Data storage path
-OPENPRISM_DATA_DIR=./data
-
-# Backend service port
-PORT=8787
-
-# MinerU API Configuration (for PDF→MD→LaTeX transfer)
-OPENPRISM_MINERU_API_BASE=https://mineru.net/api/v4
+# Template transfer from PDFs (MinerU)
 OPENPRISM_MINERU_TOKEN=your-mineru-token
+
+# Required for any shared deployment (the API refuses to start without a secret key)
+DJANGO_SECRET_KEY=<long random string>
+POSTGRES_PASSWORD=<password>
+GARAGE_RPC_SECRET=<64 hex characters>
+S3_ACCESS_KEY_ID=<GK + 24 hex characters>
+S3_SECRET_ACCESS_KEY=<64 hex characters>
 ```
 
-### LLM Configuration
-
-OpenPrism supports any **OpenAI-compatible** endpoint, including custom base_url:
-
-**Method 1: Environment Variables**
-```bash
-# .env file
-OPENPRISM_LLM_ENDPOINT=https://api.openai.com/v1/chat/completions
-OPENPRISM_LLM_API_KEY=sk-your-api-key
-OPENPRISM_LLM_MODEL=gpt-4o-mini
-```
-
-**Method 2: Frontend Settings Panel**
-- Click the "Settings" button in the frontend interface
-- Fill in API Endpoint, API Key, and Model
-- Configuration is automatically saved to browser localStorage
-
-<div align="center">
-<br>
-<img src="static/模型配置setting.png" alt="Model Configuration Settings" width="85%"/>
-<br>
-<sub>✨ LLM Configuration Settings Panel</sub>
-<br><br>
-</div>
-
-**Supported Third-party Services:**
-- OpenAI: `https://api.openai.com/v1`
-- Azure OpenAI: `https://your-resource.openai.azure.com/openai/deployments/your-deployment`
-- Other compatible services: `https://api.apiyi.com/v1`
-
-### LaTeX Compilation Configuration
-
-**Supported Compilation Engines:**
-- `pdflatex` - Standard LaTeX engine
-- `xelatex` - Supports Unicode and Chinese
-- `lualatex` - Supports Lua scripting
-- `latexmk` - Automated build tool
-- `tectonic` - Modern lightweight engine
-
-**Configuration Method:**
-1. Select compilation engine in frontend "Settings" panel
-2. Set to "Auto" for automatic fallback to available engines
-3. Customize TexLive resource path
-
-### Data Storage Configuration
-
-Default data storage is in `./data` directory, can be modified via environment variable:
-
-```bash
-# Custom data directory
-OPENPRISM_DATA_DIR=/var/openprism/data
-```
-
-**Directory Structure:**
-```
-data/
-├── projects/           # User projects
-│   ├── project-1/
-│   │   ├── main.tex
-│   │   └── references.bib
-│   └── project-2/
-└── templates/          # Template cache
-```
+LLM and MinerU settings can also be entered in the app (they are kept in your browser and sent with each request). Collaboration invite links last `OPENPRISM_COLLAB_TOKEN_TTL` seconds (default 24 hours, at most 7 days).
 
 ---
 
 ## 👥 Collaboration Guide
 
-OpenPrism includes a built-in real-time collaboration system based on CRDT (Yjs) + WebSocket, allowing multiple users to edit the same document simultaneously without any third-party service.
+OpenPrism has built-in real-time collaboration (CRDT / Yjs over WebSockets): several people can edit the same file at once and see each other's cursors. The server can run as multiple replicas — they stay in sync through Redis, and every save is merged with the stored document.
 
-### Collaboration Environment Variables
+**Accounts and workspaces.** Each account has a personal workspace and can create team workspaces. Invite people from a workspace's **Members** page by email, with a role of Admin, Editor, Commenter or Viewer. If the address has no account yet, the invitation is applied automatically when that person registers (no email is sent — share the site address with them). Projects belong to a workspace and can be moved between workspaces you can edit.
 
-Add the following to your `.env` file:
+**Inviting someone to a single project.** Open a project, choose **Collaboration** in the right-hand panel, and **generate an invite link**. Whoever opens it joins that one project as a guest — no account needed — and can edit (or only read, for viewer links) until the link expires. Guests can edit, compile and see live changes, but cannot see your other projects or use the AI features.
 
-```bash
-# Token signing secret (must change for production)
-OPENPRISM_COLLAB_TOKEN_SECRET=your-secure-random-string
-
-# Require token for collaboration (default: true, set false for local dev)
-OPENPRISM_COLLAB_REQUIRE_TOKEN=true
-
-# Token TTL in seconds (default: 86400 = 24 hours)
-OPENPRISM_COLLAB_TOKEN_TTL=86400
-```
-
-### How to Use
-
-1. **Deploy**: Deploy OpenPrism to a server with a public IP, configure a domain and HTTPS
-2. **Generate invite**: Click "Generate Invite Link" in the collaboration panel on the editor page
-3. **Share link**: Send the generated link to your collaborator
-4. **Join**: Collaborator opens the link, token is verified automatically, and they enter the editor
-5. **Edit together**: Multiple cursors visible in real time, edits sync automatically, conflicts resolved by CRDT
-
-<details>
-<summary><strong>Nginx Reverse Proxy (Recommended, For Public Servers)</strong></summary>
-
-Collaboration requires WebSocket. Nginx must be configured with upgrade headers:
-
-```nginx
-server {
-    listen 443 ssl;
-    server_name your-domain.com;
-
-    location / {
-        proxy_pass http://127.0.0.1:8787;
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection "upgrade";
-        proxy_set_header Host $host;
-    }
-}
-```
-
-> **Tip**: Local access (127.0.0.1) bypasses token verification by default, suitable for local development.
-
-</details>
-
-<details>
-<summary><strong>No Public Server? Use Tunnel (ngrok)</strong></summary>
-
-You can collaborate remotely without a public server. OpenPrism has built-in tunnel support — one command exposes your local service to the internet.
-
-#### Quick Start (ngrok, Recommended)
-
-1. Sign up for a free [ngrok](https://dashboard.ngrok.com/get-started/your-authtoken) account and get your authtoken
-2. Run the following commands:
-
-```bash
-export NGROK_AUTHTOKEN=your_token_here
-
-npm run tunnel:ngrok
-
-```
-
-3. On startup, the terminal prints a public URL. Share it with your collaborator:
-
-```
-  OpenPrism started at http://localhost:8787
-
-  Tunnel active (ngrok):
-  Public URL: https://xxxx.ngrok-free.app
-  Share this URL to collaborate remotely!
-```
-
-4. Your collaborator opens the URL in their browser and starts editing in real-time
-
-#### Other Tunnel Options
-
-| Option | Command | Notes |
-|--------|---------|-------|
-| localtunnel | `npm run tunnel` | Zero-config, but may be unstable |
-| Cloudflare Tunnel | `npm run tunnel:cf` | Requires [cloudflared](https://developers.cloudflare.com/cloudflare-one/connections/connect-apps/install-and-setup/installation/) installed |
-
-> **Note**: Tunnel is off by default. Regular `npm start` does not create a tunnel. You can also set it via env var: `OPENPRISM_TUNNEL=ngrok npm start`
-
-</details>
+**Remote collaboration.** Collaborators just need to reach your server's address — put OpenPrism behind your usual HTTPS reverse proxy or host it where your team can reach it.
 
 ---
 
@@ -597,26 +175,22 @@ npm run tunnel:ngrok
 ```
 OpenPrism/
 ├── apps/
-│   ├── frontend/           # React + Vite frontend
-│   │   ├── src/
-│   │   │   ├── app/App.tsx    # Main application logic
-│   │   │   ├── app/TransferPanel.tsx  # Template transfer UI
-│   │   │   ├── api/client.ts  # API calls
-│   │   │   └── latex/         # TexLive integration
-│   └── backend/            # Fastify backend
-│       └── src/
-│           ├── index.js       # API / compile / LLM proxy
-│           ├── routes/transfer.js  # Transfer API endpoints
-│           └── services/
-│               ├── mineruService.js        # MinerU API integration
-│               └── transferAgent/          # LangGraph transfer workflows
-│                   ├── graph.js            # Legacy transfer graph
-│                   ├── graphMineru.js       # MinerU transfer graph
-│                   ├── state.js            # Transfer state schema
-│                   └── nodes/              # Workflow nodes
-├── templates/              # LaTeX templates (ACL/CVPR/NeurIPS/ICML)
-├── data/                   # Project storage directory (default)
-└── README.md
+│   ├── frontend/           # React + TypeScript + Vite app (+ Dockerfile and nginx.conf for the web image)
+│   │   └── src/
+│   │       ├── app/          # pages: landing, projects, editor, template transfer, sign-in
+│   │       ├── auth/         # sessions, guest (invite-link) mode, API-backed workspaces
+│   │       ├── api/          # client.ts (all API calls) and auth.ts (tokens, refresh)
+│   │       └── collab/       # real-time collaboration provider
+│   └── api/                # Django API, Celery tasks and the collaboration websocket
+│       ├── accounts/  projects/  templates_app/   # users, workspaces, files, templates
+│       ├── jobs/             # async LaTeX compilation
+│       ├── ai/  transfer/    # LLM features and template transfer
+│       └── collab/           # live editing, invites
+├── design/                 # shared design system (tokens, components, icons)
+├── deploy/                 # storage setup scripts
+├── templates/              # built-in LaTeX templates (ACL/CVPR/NeurIPS/ICML, …)
+├── compose.yaml            # the whole stack for local use
+└── CLAUDE.md               # contributor / agent guide with architecture details
 ```
 
 ---
@@ -637,7 +211,7 @@ OpenPrism/
 <tr>
 <td><strong>🌐 Serverless Collaboration</strong></td>
 <td><img src="https://img.shields.io/badge/⏳-Planned-yellow?style=flat-square" alt="Planned"/></td>
-<td>Local collaboration without a public server: ① built-in tunnel integration (ngrok / Cloudflare Tunnel) to expose local services in one click; ② WebRTC-based P2P direct connection without third-party relay</td>
+<td>Collaboration without a public server: WebRTC-based P2P direct connection without a third-party relay</td>
 </tr>
 <tr>
 <td><strong>🔍 Enhanced WebSearch</strong></td>
@@ -692,8 +266,8 @@ MIT License. See [LICENSE](LICENSE).
 - Tectonic
 - CodeMirror
 - PDF.js
-- LangChain
-- React / Fastify
+- React / Django / Celery
+- Yjs / pycrdt
 
 ---
 

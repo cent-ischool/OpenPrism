@@ -51,7 +51,7 @@ export function AppTopBar({ crumbs, actions }: AppTopBarProps) {
           <Avatar name={ws.user.name} color={ws.user.color} size="lg" />
           <span style={{ display: 'grid', minWidth: 0 }}>
             <strong className="op-truncate">{ws.user.name}</strong>
-            <span className="op-truncate" style={{ color: 'var(--text-3)', fontSize: 'var(--fs-xs)' }}>{ws.user.email}</span>
+            <span className="op-truncate" style={{ color: 'var(--text-3)', fontSize: 'var(--fs-xs)' }}>{ws.guest ? t('Guest') : ws.user.email}</span>
           </span>
         </>
       )
@@ -65,7 +65,12 @@ export function AppTopBar({ crumbs, actions }: AppTopBarProps) {
     { label: 'English', icon: 'languages', checked: i18n.language === 'en-US', onSelect: () => void i18n.changeLanguage('en-US') },
     { label: '中文', icon: 'languages', checked: i18n.language === 'zh-CN', onSelect: () => void i18n.changeLanguage('zh-CN') },
     { type: 'sep' },
-    { label: t('Sign out'), icon: 'log-out', onSelect: () => ws.signOut() }
+    ...(ws.guest
+      ? [
+          { label: t('Sign in with an account'), icon: 'user', onSelect: () => { ws.signOut(); navigate('/login'); } } as MenuEntry,
+          { label: t('Leave shared project'), icon: 'log-out', onSelect: () => { ws.signOut(); navigate('/'); } } as MenuEntry
+        ]
+      : [{ label: t('Sign out'), icon: 'log-out', onSelect: () => ws.signOut() } as MenuEntry])
   ];
 
   return (
@@ -73,11 +78,18 @@ export function AppTopBar({ crumbs, actions }: AppTopBarProps) {
       <Link to="/projects" className="op-topbar-brand" aria-label={t('Open Prism — all projects')} data-tip={t('All projects')}>
         <LogoMark size={22} />
       </Link>
-      <MenuButton className="op-crumb" items={workspaceItems} menuLabel={t('Workspaces')} minWidth={260}>
-        <Avatar name={ws.active.name} color={ws.active.color} size="sm" square />
-        <span className="op-truncate">{ws.active.name}</span>
-        <Icon name="chevrons-up-down" />
-      </MenuButton>
+      {ws.guest ? (
+        <span className="op-crumb">
+          <Avatar name={ws.active.name} color={ws.active.color} size="sm" square />
+          <span className="op-truncate">{ws.active.name}</span>
+        </span>
+      ) : (
+        <MenuButton className="op-crumb" items={workspaceItems} menuLabel={t('Workspaces')} minWidth={260}>
+          <Avatar name={ws.active.name} color={ws.active.color} size="sm" square />
+          <span className="op-truncate">{ws.active.name}</span>
+          <Icon name="chevrons-up-down" />
+        </MenuButton>
+      )}
       {crumbs}
       <div className="op-fill" />
       <div className="op-topbar-right">

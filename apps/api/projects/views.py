@@ -9,7 +9,7 @@ from django.db import transaction
 from django.http import HttpResponse, StreamingHttpResponse
 from django.utils import timezone
 from rest_framework.decorators import api_view, authentication_classes, parser_classes, permission_classes
-from rest_framework.exceptions import NotFound, ParseError
+from rest_framework.exceptions import NotFound, ParseError, PermissionDenied
 from rest_framework.parsers import JSONParser
 from rest_framework.response import Response
 
@@ -84,9 +84,15 @@ def _template_or_404(template_id):
 # ---- projects ---------------------------------------------------------------------------------
 
 @api_view(['GET', 'POST'])
+@permission_classes([IsUserOrGuest])
 def projects_collection(request):
+    guest = getattr(request.user, 'is_guest', False)
     if request.method == 'GET':
+        if guest:  # an invite-link guest sees exactly the project they were invited to
+            return Response({'projects': [project_meta(p) for p in Project.objects.filter(pk=request.user.project_id)]})
         return Response({'projects': [project_meta(p) for p in user_projects(request.user).distinct()]})
+    if guest:
+        raise PermissionDenied('Guests cannot create projects.')
     name = (request.data.get('name') or 'Untitled').strip() or 'Untitled'
     template_id = request.data.get('template')
     template = _template_or_404(template_id) if template_id else None

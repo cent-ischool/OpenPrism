@@ -419,7 +419,9 @@ class RestTests(CollabTestBase):
         self.assertEqual(g.get(f'/api/projects/{self.pid}/file', {'path': 'main.tex'}).data['content'], 'shared')
         self.assertEqual(g.get(f'/api/projects/{other.id}/file', {'path': 'main.tex'}).status_code, 404)
         self.assertEqual(g.put(f'/api/projects/{self.pid}/file', {'path': 'a.tex', 'content': 'x'}, format='json').status_code, 200)
-        for url in ('/api/projects', '/api/templates', '/api/llm'):                 # account-level endpoints
+        self.assertEqual([p['id'] for p in g.get('/api/projects').data['projects']], [self.pid])   # only their own project
+        self.assertEqual(g.post('/api/projects', {'name': 'x'}, format='json').status_code, 403)
+        for url in ('/api/templates', '/api/llm'):                                  # account-level endpoints
             self.assertEqual(g.get(url).status_code if url != '/api/llm' else g.post(url, {}, format='json').status_code, 403, url)
         self.assertEqual(g.delete(f'/api/projects/{self.pid}/permanent').status_code, 403)   # destructive project ops
         self.assertEqual(g.post(f'/api/projects/{self.pid}/rename-project', {'name': 'x'}, format='json').status_code, 403)

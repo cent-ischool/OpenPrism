@@ -249,6 +249,7 @@ button.op-badge { cursor: pointer; }
 .op-field { display: grid; gap: var(--sp-1); }
 .op-field-label { display: block; font-size: var(--fs-xs); font-weight: var(--fw-medium); color: var(--text-2); }
 .op-field-help { display: block; font-size: var(--fs-xs); color: var(--text-3); }
+.op-field-label .op-field-help { display: inline; margin-left: var(--sp-1); font-weight: var(--fw-regular); }
 
 /* ---------- select (custom trigger + menu) ---------- */
 .op-select {
@@ -393,7 +394,6 @@ button.op-badge { cursor: pointer; }
 .op-topbar-right { display: flex; align-items: center; gap: var(--sp-2); flex: none; }
 .op-account-btn { display: grid; place-items: center; padding: 2px; border: 0; border-radius: 50%; background: transparent; }
 .op-account-btn[aria-expanded="true"] { box-shadow: 0 0 0 2px var(--accent); }
-.op-mock-note { padding: var(--sp-2); font-size: var(--fs-2xs); color: var(--text-3); }
 
 @media (max-width: 767px) {
   .op-hide-sm { display: none !important; }
@@ -403,10 +403,21 @@ button.op-badge { cursor: pointer; }
   .op-hide-md { display: none !important; }
 }
 
-/* ---------- signed-out (mock auth) ---------- */
+/* ---------- sign-in / register ---------- */
 .op-signed-out { position: fixed; inset: 0; z-index: 800; display: grid; place-items: center; padding: var(--sp-4); background: var(--bg); }
 .op-signed-out-card { width: min(400px, 100%); display: grid; justify-items: center; gap: var(--sp-5); padding: var(--sp-8); border: 1px solid var(--border); border-radius: var(--r-lg); background: var(--surface); text-align: center; color: var(--text); }
 .op-signed-out-card h1 { margin: 0; font-size: var(--fs-2xl); font-weight: var(--fw-semibold); }
 .op-signed-out-card p { margin: 0; color: var(--text-2); }
-.op-signed-out-account { display: flex; align-items: center; gap: var(--sp-3); width: 100%; padding: var(--sp-3); border: 1px solid var(--border); border-radius: var(--r-md); background: var(--surface); color: var(--text); text-align: left; --icon-size: 16px; }
-@media (hover: hover) { .op-signed-out-account:hover { border-color: var(--accent); } }
+.op-auth-form { display: grid; gap: var(--sp-4); width: 100%; text-align: left; }
+.op-auth-banner { display: flex; align-items: flex-start; gap: var(--sp-2); padding: var(--sp-2) var(--sp-3); border: 1px solid var(--border); border-radius: var(--r-sm); background: var(--accent-soft); color: var(--text); font-size: var(--fs-sm); text-align: left; --icon-size: 16px; }
+.op-auth-banner > .op-icon { margin-top: 2px; flex: none; }
+.op-auth-banner.is-error { border-color: var(--danger); background: var(--danger-soft); color: var(--danger); }
+.op-auth-switch { margin: 0; color: var(--text-2); font-size: var(--fs-sm); }
+.op-link-btn { padding: 0; border: 0; background: none; color: var(--accent); font: inherit; font-weight: var(--fw-medium); cursor: pointer; }
+.op-link-btn:hover { text-decoration: underline; }
+.op-link-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: var(--r-xs); }
+.op-input-wrap { position: relative; }
+.op-input-wrap > .op-input { padding-right: calc(var(--h-sm) + var(--sp-2)); }
+.op-input-wrap > .op-btn-icon { position: absolute; top: 50%; right: var(--sp-1); transform: translateY(-50%); }
+.op-field-error { --icon-size: 14px; display: flex; align-items: flex-start; gap: var(--sp-1); font-size: var(--fs-xs); color: var(--danger); }
+.op-field-error > .op-icon { margin-top: 2px; flex: none; }

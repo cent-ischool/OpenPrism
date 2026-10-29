@@ -27,6 +27,7 @@ import {
   getFile,
   getProjectTree,
   getCollabToken,
+  blobUrl,
   listProjects,
   renamePath,
   deleteFile,
@@ -41,6 +42,7 @@ import {
   setCollabServer
 } from '../api/client';
 import type { ArxivPaper } from '../api/client';
+import { tokenForUrl } from '../api/auth';
 import { createTwoFilesPatch, diffLines } from 'diff';
 import type { CompileOutcome } from '../latex/engine';
 import * as Y from 'yjs';
@@ -1612,7 +1614,7 @@ export default function EditorPage() {
     });
     const provider = new CollabProvider({
       serverUrl: normalizeServerUrl(collabServer) || (typeof window === 'undefined' ? '' : window.location.origin),
-      token: collabToken || undefined,
+      token: tokenForUrl, // read on every (re)connect, so a refreshed account token is picked up
       projectId,
       filePath: activePath,
       doc: ydoc,
@@ -4591,9 +4593,9 @@ export default function EditorPage() {
                       <div className="figure-display">
                         {selectedFigure ? (
                           selectedFigure.toLowerCase().endsWith('.pdf') ? (
-                            <object data={`/api/projects/${projectId}/blob?path=${encodeURIComponent(selectedFigure)}`} type="application/pdf" />
+                            <object data={blobUrl(projectId, selectedFigure)} type="application/pdf" />
                           ) : (
-                            <img src={`/api/projects/${projectId}/blob?path=${encodeURIComponent(selectedFigure)}`} alt={selectedFigure} />
+                            <img src={blobUrl(projectId, selectedFigure)} alt={selectedFigure} />
                           )
                         ) : (
                           <EmptyState icon="image" title={t('选择图片进行预览。')} />
@@ -5371,7 +5373,7 @@ export default function EditorPage() {
                         <div className="vision-result">
                           <div className="muted">{t('预览')}</div>
                           <img
-                            src={`/api/projects/${projectId}/blob?path=${encodeURIComponent(plotAssetPath)}`}
+                            src={blobUrl(projectId, plotAssetPath)}
                             alt={plotAssetPath}
                             style={{ width: '100%', borderRadius: '8px' }}
                           />

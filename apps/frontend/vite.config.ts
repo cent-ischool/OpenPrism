@@ -13,9 +13,11 @@ export default defineConfig({
   server: {
     host: '0.0.0.0',
     port: 5173,
+    // The devcontainer's bind-mounted workspace does not deliver file-change events, so Vite would serve stale code.
+    watch: { usePolling: true, interval: 300 },
     proxy: {
       '/api': {
-        target: process.env.OPENPRISM_API_URL || 'http://localhost:8787',
+        target: process.env.OPENPRISM_API_URL || 'http://localhost:8000',
         changeOrigin: true,
         ws: true,
         xfwd: true

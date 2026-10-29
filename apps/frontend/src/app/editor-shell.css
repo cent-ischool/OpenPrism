@@ -121,7 +121,7 @@ body.ed-resizing iframe, body.ed-resizing canvas { pointer-events: none; }
 .ed-app .file-tree-body { padding: var(--sp-1); }
 .ed-app .tree-row {
   --icon-size: 16px;
-  gap: 6px; min-height: 28px; padding: 0 var(--sp-2); border-radius: var(--r-xs);
+  width: 100%; gap: 6px; min-height: 28px; padding: 0 var(--sp-2); border-radius: var(--r-xs);
   font-size: var(--fs-sm); color: var(--text-2); box-shadow: none; transform: none;
 }
 @media (hover: hover) { .ed-app .tree-row:hover { background: var(--surface-2); color: var(--text); } }
@@ -130,7 +130,7 @@ body.ed-resizing iframe, body.ed-resizing canvas { pointer-events: none; }
 .ed-app .tree-row.drag-over, .ed-app .tree-row.drag-over-file { box-shadow: inset 0 0 0 1px var(--accent); background: var(--accent-soft); }
 .ed-app .tree-caret { --icon-size: 14px; width: auto; color: var(--text-3); transition: transform var(--dur-fast); }
 .ed-app .tree-caret.is-closed { transform: rotate(-90deg); }
-.ed-app .tree-icon { width: auto; height: auto; border: 0; background: none; padding: 0; }
+.ed-app .tree-icon { --icon-size: 16px; flex: none; width: var(--icon-size); height: var(--icon-size); border: 0; background: none; padding: 0; }
 .ed-app .tree-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .ed-app .inline-input { border: 1px solid var(--accent); border-radius: var(--r-xs); background: var(--surface); color: var(--text); padding: 2px 6px; font-size: var(--fs-sm); min-width: 0; flex: 1; }
 .ft-tex { color: var(--accent); }

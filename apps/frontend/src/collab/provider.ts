@@ -12,7 +12,8 @@ export type CollabStatus = 'disconnected' | 'connecting' | 'connected';
 
 type ProviderOptions = {
   serverUrl: string;
-  token?: string;
+  /** The credential, or a function returning it. A function is called on every (re)connect, so it can track token refresh. */
+  token?: string | (() => string);
   projectId: string;
   filePath: string;
   doc: Y.Doc;
@@ -23,7 +24,7 @@ type ProviderOptions = {
 
 export class CollabProvider {
   private serverUrl: string;
-  private token: string;
+  private token: string | (() => string);
   private projectId: string;
   private filePath: string;
   private doc: Y.Doc;
@@ -118,8 +119,9 @@ export class CollabProvider {
       projectId: this.projectId,
       file: this.filePath
     });
-    if (this.token) {
-      qs.set('token', this.token);
+    const token = typeof this.token === 'function' ? this.token() : this.token;
+    if (token) {
+      qs.set('token', token);
     }
     const wsUrl = `${wsBase}/api/collab?${qs.toString()}`;
     this.onStatus?.('connecting');

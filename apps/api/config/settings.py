@@ -88,6 +88,7 @@ def _database():
 
 DATABASES = {'default': _database()}
 
+TEST_RUNNER = 'config.testrunner.Runner'
 AUTH_USER_MODEL = 'accounts.User'
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 AUTH_PASSWORD_VALIDATORS = [

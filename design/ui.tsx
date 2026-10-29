@@ -449,3 +449,17 @@ export function EmptyState({ icon, title, children, action }: { icon: IconName; 
     </div>
   );
 }
+
+
+/* =====================================================================
+   FieldError — inline validation message under a form field
+   ===================================================================== */
+export function FieldError({ id, message }: { id?: string; message: string | null | undefined }) {
+  if (!message) return null;
+  return (
+    <span className="op-field-error" id={id} role="alert">
+      <Icon name="alert-circle" />
+      <span>{message}</span>
+    </span>
+  );
+}

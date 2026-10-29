@@ -6,72 +6,56 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 OpenPrism is a local-first LaTeX + AI workspace for academic writing: a three-panel web app (file tree / CodeMirror LaTeX editor / PDF preview) with an LLM assistant (chat/agent/tools modes), LaTeX compilation, template management, LLM-powered template transfer (migrating a paper between conference templates), real-time multi-user collaboration (Yjs CRDT), and peer-review tooling.
 
-## Migration status (read this first)
+## Status (read this first)
 
-The app is mid-migration from a single Node/Fastify process (no database, state on disk and in memory) to a cloud/Kubernetes-ready set of components: **Django REST Framework + Celery + Postgres + Redis + Garage (S3)**, keeping the React frontend. **Two backends currently coexist:**
-
-| | Node backend (`apps/backend`, port 8787) | Django API (`apps/api`, port 8000) |
-|---|---|---|
-| Status | **Live** — the only backend the frontend can use today | Phases 1–6 done: models, JWT auth, S3-backed file service, projects/files/templates REST, legacy importer, Celery + async LaTeX compile, AI endpoints (llm, agent chat/direct/tools, vision, plot, arXiv search/bibtex), template transfer (legacy + MinerU), arXiv import, real-time collaboration (Channels websocket + invites) |
-| State | Directories under `OPENPRISM_DATA_DIR` | Postgres (text files, metadata) + Garage (binaries, PDFs, templates) |
-| Auth | Localhost trust + HMAC collab token | Real users, workspaces, roles, JWT |
-
-The frontend has **no login UI yet**, so it cannot talk to the Django API end to end; Vite proxies `/api` to `OPENPRISM_API_URL` (default `http://localhost:8787`). Remaining work, in order: **7** cutover (nginx `web` image, delete `apps/backend`, **frontend login UI** — including passing the user's JWT as the `token` of the collab websocket, since owners no longer get the old localhost bypass), **8** k8s manifests in `deploy/k8s`. Phases 7–8 are not started.
+OpenPrism has been moved from a single Node/Fastify process (no database; state on disk and in memory) to a cloud/Kubernetes-ready set of components: **React frontend + Django REST/Channels API + Celery workers + Postgres + Redis + Garage (S3)**. The Node backend is **gone** (`apps/backend` was deleted at cutover; it remains in git history before the Phase 7 commit). Done: data services, Django models/auth/files/templates, async compile, AI endpoints, template transfer, arXiv import, real-time collaboration, accounts + workspaces UI, and the production `web` image. **Remaining: Phase 8 — Kubernetes manifests in `deploy/k8s`** (Deployments per component, HPA on queue depth, ingress with websockets, secrets/config, probes, resource limits, NetworkPolicies including egress limits for the plot sandbox and the SSRF-sensitive workers, a one-off migrate Job).
 
 ## Running the project
 
-Develop inside the devcontainer (it has Node 20, TeX Live, and docker-in-docker so `docker compose` works inside it). Ports 5173, 8000, 8787, 5432, 6379, 3900 are forwarded.
+Develop inside the devcontainer (Node 20, TeX Live, and docker-in-docker so `docker compose` works inside it). Forwarded ports: 5173 (Vite dev), 8080 (nginx app), 8000 (API), 5432, 6379, 3900.
 
-**Legacy app (what you see in the browser today):**
 ```bash
-cp .env.sample .env          # once; add OPENROUTER_API_KEY / OPENPRISM_LLM_* if you want the AI features
+cp .env.sample .env                 # once; add OPENPRISM_LLM_* / OPENPRISM_MINERU_TOKEN if you want server-side AI defaults
+docker compose up -d --wait         # postgres, redis, garage, api, worker-tex, worker-ai, beat, web
+deploy/garage-init.sh               # one-time & idempotent: Garage layout, bucket, access key (reads S3_* from .env)
 npm install
-npm run dev                  # Vite (5173) + Node backend (8787)
+npm run dev                         # Vite dev server on :5173 (proxies /api + websockets to the api on :8000)
 ```
+- **Use the app** at http://localhost:5173 (dev, hot reload) or http://localhost:8080 (the production `web` image: built SPA + nginx proxy). Register an account in the UI; there is no seeded user.
+- Load the pre-migration data into an account: `docker compose exec api python manage.py import_legacy --owner you@example.com` (reads `templates/` and `data/`, mounted read-only at `/legacy/`; register that account first).
+- **Tests** (real Postgres/Redis/Garage; run `deploy/garage-init.sh` once first; always pass `--noinput`, a stale `test_openprism` database otherwise blocks on a prompt):
+  `docker compose run --rm api python manage.py test --noinput` (LaTeX/plot tests skip here) ·
+  `docker compose run --rm worker-tex python manage.py test jobs transfer --noinput` (real pdflatex/bibtex) ·
+  `docker compose run --rm worker-ai python manage.py test ai --noinput` (real matplotlib + plot sandbox).
+- Logs / restarts: `docker compose logs -f api worker-tex`; Celery does not auto-reload, so after editing task code `docker compose restart worker-tex worker-ai beat`; the api reloads itself (code is bind-mounted). After rebuilding an image use `docker compose up -d` (not just `build`) so containers are recreated.
+- `docker compose down` stops everything (volumes kept; add `-v` to wipe all data). After model changes: `docker compose run --rm api python manage.py makemigrations <app>` and commit the migration.
+- Checks: `curl localhost:8000/healthz` (liveness), `curl localhost:8000/readyz` (Postgres + Redis + S3; 503 otherwise), `curl localhost:8080/healthz` (web).
+- Use plain `docker compose`, not npm wrappers. `npm run build` / `npm run preview` only build/preview the frontend.
 
-**Data services + Django API (compose.yaml at the repo root):**
-```bash
-docker compose up -d --wait  # postgres, redis, garage, api (runs `migrate`, then uvicorn --reload on :8000), worker-tex (Celery compile worker), worker-ai (Celery ai + import queues), beat
-deploy/garage-init.sh        # one-time & idempotent: Garage layout, bucket, access key (reads S3_* from .env)
-docker compose exec api python manage.py import_legacy --owner you@example.com   # optional: load templates/ and data/ (register that user first via POST /api/auth/register)
-docker compose run --rm api python manage.py test        # API tests against the real Postgres + Garage (needs garage-init done); LaTeX tests skip here
-docker compose run --rm worker-tex python manage.py test jobs transfer   # same, plus real pdflatex/bibtex compile + transfer tests (slow image, run when touching jobs/compile.py or transfer/)
-docker compose run --rm worker-ai python manage.py test ai      # same, plus real matplotlib plot + sandbox tests (run when touching ai/plot*.py)
-docker compose logs -f api worker-tex   # tail logs
-docker compose restart worker-tex worker-ai beat   # Celery does not auto-reload: run after editing Python used by tasks
-docker compose down          # stop; volumes kept (add -v to wipe all data)
-```
-Quick checks: `curl localhost:8000/healthz` (liveness) and `curl localhost:8000/readyz` (Postgres + Redis + S3 reachable; 503 otherwise). The api container mounts `apps/api` live (code edits reload) and mounts `templates/` and `data/` read-only at `/legacy/` for the importer. Use plain `docker compose`, not npm wrappers.
+There is no JS test suite and no lint/format config (no ESLint/Prettier/Jest/Vitest). The Django API has the tests (`manage.py test`). `tsc --noEmit` in `apps/frontend` reports 7 pre-existing type errors (CodeMirror/Blob/listener typings); keep it at 7. For UI changes, verify in a real browser: Playwright can be installed outside the repo (`npm i playwright` in a scratch dir, `sudo npx playwright install-deps chromium`); Vite is configured with file polling because the bind-mounted workspace does not deliver change events.
 
-**Other commands:**
-```bash
-npm run dev:backend | dev:frontend | build | preview   # Node backend only / Vite only / production build / preview
-npm run tunnel | tunnel:cf | tunnel:ngrok              # expose the Node server publicly (dev collaboration only; Node backend)
-docker compose run --rm api python manage.py makemigrations <app>   # after model changes; commit the migration
-```
-To point the dev frontend at the Django API: `OPENPRISM_API_URL=http://localhost:8000 npm run dev:frontend` (requires the login UI, not built yet).
+LaTeX compile needs a TeX engine; only the `worker-tex` image carries TeX Live (the devcontainer also has `latexmk` + a subset of `texlive-*`).
 
-There is no JS test suite and no lint/format config (no ESLint/Prettier/Jest/Vitest). Only the Django API has tests (`manage.py test`). `tsc --noEmit` in `apps/frontend` reports 7 pre-existing type errors (CodeMirror/Blob/listener typings); none come from the redesign.
+## Building UI
 
-LaTeX compile needs a TeX engine (`texlive-full` or Tectonic); the devcontainer installs `latexmk` plus a subset of `texlive-*`. In the target architecture only the `worker-tex` image carries TeX Live.
+Follow the design system when building UI components. it is here design/reference/design-system.html
 
 ## Configuration
 
 Everything is environment variables; `.env` at the repo root (copied from `.env.sample`, gitignored, passed into the devcontainer via `runArgs --env-file`, and read by compose for `${VAR}` interpolation). Compose supplies container-side URLs (`postgres`, `redis`, `garage` hostnames) itself, so `.env` values like `DATABASE_URL=...@localhost` are for tools running in the devcontainer, not inside compose services.
 
-- **Node backend:** `apps/backend/src/config/constants.js` — `OPENPRISM_LLM_*`, `OPENPRISM_DATA_DIR`, `OPENPRISM_COLLAB_*`, `OPENPRISM_MINERU_*`, `PORT`.
-- **Django API:** `apps/api/config/settings.py` — `DJANGO_SECRET_KEY` (**required, no default; startup fails without it**), `DJANGO_DEBUG`, `DJANGO_ALLOWED_HOSTS`, `DATABASE_URL`, `REDIS_URL` / `CELERY_BROKER_URL`, `S3_ENDPOINT_URL` (internal), `S3_PUBLIC_ENDPOINT_URL` (browser-reachable; used in presigned links), `S3_BUCKET`, `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY`, `JWT_ACCESS_MINUTES`, `JWT_REFRESH_DAYS`. The values in `.env.sample` (all-zero Garage secrets, `dev-insecure-change-me`) are dev placeholders — never reuse them on a shared deployment.
-- Frontend LLM/MinerU settings live in browser `localStorage` (`openprism-settings-v1`), not in files.
+- **API and workers:** `apps/api/config/settings.py` — `DJANGO_SECRET_KEY` (**required, no default; startup fails without it**), `DJANGO_DEBUG`, `DJANGO_ALLOWED_HOSTS`, `DATABASE_URL`, `REDIS_URL` / `CELERY_BROKER_URL`, `S3_ENDPOINT_URL` (internal), `S3_PUBLIC_ENDPOINT_URL` (browser-reachable; used in presigned links), `S3_BUCKET`, `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY`, `JWT_ACCESS_MINUTES`, `JWT_REFRESH_DAYS`. The values in `.env.sample` (all-zero Garage secrets, `dev-insecure-change-me`) are dev placeholders — never reuse them on a shared deployment.
+- Frontend LLM/MinerU settings live in browser `localStorage` (`openprism-settings-v1`) and are sent per request (the API never stores the keys; see the AI and transfer sections). Account tokens: `openprism-auth-v1` (localStorage); invite token: `openprism-collab-token` (sessionStorage).
 
 ## Architecture
 
-npm workspaces monorepo: `apps/frontend` (React 18 + TypeScript + Vite), `apps/backend` (legacy Node.js ESM + Fastify), plus `apps/api` (Django, Python — not an npm workspace; built from `apps/api/Dockerfile`). `design/` is the shared UI package. No shared `packages/` exists despite the workspaces glob.
+Monorepo: `apps/frontend` (React 18 + TypeScript + Vite; the only npm workspace in use), `apps/api` (Django + Celery + Channels, Python, built from `apps/api/Dockerfile`), and `design/` (the shared UI package imported as `@design`). `compose.yaml` runs everything locally.
 
 ### Target component split (for k8s; one image/Deployment each)
 
 | Component | Tech | Role |
 |---|---|---|
-| `web` | nginx + built frontend | static SPA, proxies `/api` and WebSocket upgrades *(Phase 7)* |
+| `web` | nginx + built frontend (`apps/frontend/Dockerfile`, `nginx.conf`) | **exists**: serves the SPA (history fallback, hashed assets cached), proxies `/api` incl. websockets and SSE to `api:8000`, 200 MB uploads. Logs omit query strings (tokens travel in `?token=` for images/PDFs/event streams/websockets) and sends `Referrer-Policy: no-referrer` so they cannot leak. Build context is the repo root (the frontend imports `/design`) |
 | `api` | Django + DRF + Channels, uvicorn (ASGI) | stateless REST **and the collab websocket** (`/api/collab`); `/healthz`, `/readyz` — **exists**. Scale horizontally: replicas sync through Redis, no sticky routing needed |
 | `worker-tex` | Celery, queues `compile` + `transfer` | image with TeX Live (template transfer compiles LaTeX, so it runs here and also makes LLM/MinerU calls); per-command timeout, CPU/file-size rlimits, shell-escape off — **exists** (set container CPU/mem limits in k8s) |
 | `worker-ai` | Celery, queues `ai` + `import` | LLM, vision, plot (runs LLM-generated Python), agent, arXiv import — **exist**. Image adds matplotlib/pandas/seaborn (`requirements-ai.txt`) |
@@ -125,30 +109,20 @@ Apps: `accounts` (email-login `User`, register/login/refresh/me), `projects` (`W
 - **Known limitations:** REST writes to a file while someone has it open are overwritten by the next flush (same as Node; the editor writes through the Yjs doc in collab mode). Renaming/deleting a file drops its stored Yjs state, but a room that is still live for the old path can recreate the file at its next flush. Awareness entries of a crashed replica linger until clients reconnect. Rooms persist at most every 800 ms, so a hard crash can lose that window.
 - **Verifying against the real client stack:** `node apps/api/collab/interop/yjs_client.mjs <baseUrl> <inviteToken> <projectId> main.tex [<secondReplicaBaseUrl>]` drives the genuine `yjs`/`y-protocols` libraries (message handling copied from `provider.ts`) against a running stack; with a second URL (e.g. `docker compose run -d --no-deps -p 8001:8000 api uvicorn config.asgi:application --host 0.0.0.0 --port 8000`) it exercises two processes over Redis. Unit tests: `docker compose run --rm api python manage.py test collab --noinput` (uses `channels.testing.WebsocketCommunicator`; `daphne` is installed only because `channels.testing` imports it).
 
-**Frontend compile contract.** `compileProject()` in `api/client.ts` works against both backends: Node answers with the finished PDF, Django returns a `jobId` which the client polls (1 s, 10 min cap) and then downloads, resolving to the same `{ok, pdf(base64), log, status}` shape and reporting progress via an optional callback (the editor shows it in the status bar).
+**Frontend compile contract.** `compileProject()` in `api/client.ts` hides the job protocol: it posts, polls `/api/jobs/:id` (1 s, 10 min cap), downloads the PDF, and resolves to `{ok, pdf(base64), log, status}`, reporting progress via an optional callback (the editor shows it in the status bar). A reply without a `jobId` is a validation failure (`{ok: false, error}`) and is returned as is.
 
 **Gotchas.** `garage-init.sh` must run once before tests or presigned/binary features fail. Presigned URLs (currently unused by the UI) are signed for `S3_PUBLIC_ENDPOINT_URL`, so tests fetch them through the internal endpoint with the public `Host` header. `docker compose up` runs `migrate` on every api start (fine for dev; in k8s make it a one-off Job). New dependencies go in `apps/api/requirements.txt` as exact pins, then rebuild with `docker compose build api`.
 
-### Legacy Node backend and frontend
+### Frontend
 
-The legacy backend lives in `apps/backend/src`. `index.js` is the Fastify entry point: registers CORS, multipart (200MB limit), WebSocket support, a global auth preHandler for `/api/*` (except `/api/health` and `/api/collab`), serves the built frontend in production, and optionally starts a tunnel if `OPENPRISM_TUNNEL` is set.
+**Layout (`apps/frontend/src`).**
+React Router app (`app/App.tsx`) with routes for landing, project list / workspace home (`app/ProjectPage.tsx`, sections via `?section=`), the main editor, and a collab-invite-join page. The editor (`app/EditorPage.tsx`, styles in `app/editor-shell.css`) is a shell of icon rails + collapsible/resizable side panels around an editor/PDF split: left panel = Files / Outline / project Search; right panel = Assistant / Review / arXiv / Websearch / Vision / Plot / Collaborate; centre has an Editor / Split / PDF mode switch. Layout state persists in `localStorage` under `openprism-editor-layout-v1`. `app/TransferPanel.tsx` drives the Template Transfer UI by polling the transfer job via `transferStep()` and handling the `waiting_images` pause state. All backend communication goes through `api/client.ts` (which also defines the shared request/response types — there's no separate `types/` module) and, underneath it, `api/auth.ts`. In dev, Vite proxies `/api` (incl. the WebSocket upgrade) to `OPENPRISM_API_URL` (default `http://localhost:8000`) and `/texlive` to SwiftLaTeX's cloud TexLive resources; in production nginx does the `/api` proxying.
 
-Routes live in `routes/*.js` (one file per resource: `projects`, `compile`, `llm`, `vision`, `plot`, `agent`, `collab`, `transfer`, `arxiv`, `health`) and delegate to `services/*.js`. Projects are stored as plain directories under `OPENPRISM_DATA_DIR` (default `./data/<projectId>/`), each with a `project.json` metadata file plus the actual LaTeX/asset files — there is no database.
-
-**LLM agent (`services/agentService.js`)**: a LangChain tools-agent (`createOpenAIToolsAgent` + `AgentExecutor`) exposing `read_file`/`list_files`/`propose_patch`/`apply_patch`/`search_arxiv`/`fetch_bibtex` tools. Patches are proposed as diffs for the frontend to confirm before `apply_patch` is called — this is the "Agent mode" diff-confirmation UX described in the README.
-
-**Template Transfer (`services/transferAgent/`)** is the most structurally complex part of the backend — a LangGraph state machine (checkpointed with `MemorySaver`, so runs are resumable/steppable via `POST /api/transfer/step`) with two entry graphs:
-- `graph.js` (Legacy mode, LaTeX→LaTeX): `analyzeSource → analyzeTarget → draftPlan → applyTransfer → copyAssets → compile`, then conditionally loops `compile → fixCompile` on failure (LLM reads the compile log and proposes a fix), or proceeds to an optional VLM layout-check loop (`requestPageImages → checkLayout → fixLayout`) before `finalize`.
-- `graphMineru.js` (MinerU mode, PDF→MD→LaTeX): prepends `compileSource → parsePdfWithMineru` (calls `services/mineruService.js`, which uploads the PDF to MinerU's API, polls for extraction, and downloads Markdown + images) before rejoining the same `analyzeTarget → ... → finalize` pipeline.
-- Each node is a pure function in `nodes/` operating on the shared state schema defined in `state.js`. The graph interrupts before `checkLayout`, waiting on the frontend to render PDF pages and POST screenshots via `/api/transfer/submit-images`.
-- When adding a transfer step, add a node file under `nodes/`, wire it into the relevant graph's node/edge definitions, and extend `state.js` if new fields are needed.
-
-**Real-time collaboration (`services/collab/`)**: no backend framework for this — hand-rolled Yjs integration. `docStore.js` keeps one in-memory Yjs doc per `"<projectId>:<filePath>"`, speaks a 2-message binary protocol over the `/api/collab` WebSocket (sync updates + awareness/cursor presence via `lib0`/`y-protocols`), and debounce-flushes changes to disk (800ms). `tokenService.js` issues/verifies a custom signed token format (`op1.<body>.<sig>`, HMAC-SHA256) for invite links; connections from `127.0.0.1` bypass token auth (dev convenience), remote connections require a valid token.
-
-**Compilation (`services/compileService.js`)** shells out to `pdflatex`/`xelatex`/`lualatex`/`latexmk`/`tectonic`, running multiple passes and auto-detecting bibtex vs biber from the `.aux` file.
-
-**Frontend (`apps/frontend/src`).**
-React Router app (`app/App.tsx`) with routes for landing, project list / workspace home (`app/ProjectPage.tsx`, sections via `?section=`), the main editor, and a collab-invite-join page. The editor (`app/EditorPage.tsx`, styles in `app/editor-shell.css`) is a shell of icon rails + collapsible/resizable side panels around an editor/PDF split: left panel = Files / Outline / project Search; right panel = Assistant / Review / arXiv / Websearch / Vision / Plot / Collaborate; centre has an Editor / Split / PDF mode switch. Layout state persists in `localStorage` under `openprism-editor-layout-v1`. `app/TransferPanel.tsx` drives the Template Transfer UI by polling the backend's LangGraph job via `transferStep()` and handling the `waiting_images` pause state. All backend communication goes through `api/client.ts`, which also defines the shared request/response types — there's no separate `types/` module. Vite proxies `/api` (incl. WebSocket upgrade) to the backend on 8787, and proxies `/texlive` to SwiftLaTeX's cloud TexLive resources for in-browser compilation assets.
+**Accounts, sessions and workspaces in the frontend.** Three pieces, in this order of dependency:
+- `api/auth.ts` (framework-free): owns credentials. An *account session* is a JWT access + refresh pair in localStorage (`openprism-auth-v1`, shared across tabs); a *guest* credential is an invite token in sessionStorage (this tab only) and **wins while present**. `apiFetch()` adds the language header and the right bearer token, and on a 401 refreshes once (single-flight) and retries; a rejected refresh signs the account out. A timer refreshes the access token a minute before it expires so long-lived websockets keep a valid token. Refresh tokens rotate and are revoked on logout (server side). Use `tokenForUrl()` / `blobUrl()` for anything that cannot send headers (`<img>`, `<object>`, `EventSource`, websockets); never put tokens in other URLs. Tokens in localStorage are readable by any script on the page, so **never inject untrusted HTML**.
+- `auth/AuthProvider.tsx`: resolves who this tab is — `loading | anonymous | guest | user` — via `/api/auth/me` or the invite's `resolve` endpoint. A change of identity goes to `loading` *immediately* (otherwise the catch-all route redirects on the stale identity — this bug made invite links land on /login). `useAuth()` exposes `signIn/signUp/signOut/leaveGuest`.
+- `auth/useWorkspaceValue.ts`: the API-backed implementation of the design system's workspace contract (below): loads `/api/workspaces`, remembers the active workspace per account, and wraps the member/role/invite/move calls. `guestWorkspaces()` builds the placeholder value for invite-link guests.
+`app/App.tsx` picks the route set by auth status: anonymous → landing, `/login`, `/register`, `/collab` (everything else redirects to `/login?next=…`; `next` is only followed if it is a same-site path, see `safeNext`); guest → that one project's editor only; user → the full app, rendered only after the workspaces have loaded. Workspace roles are Owner / Admin / Editor / Commenter / Viewer (commenters are read-only until a commenting feature exists). Inviting an email that has no account shows a pending "Invited" member; it becomes a membership at registration (no email is sent). The editor's collab provider takes `token: tokenForUrl` (a function, evaluated on every reconnect).
 
 ### Design system (`design/`)
 
@@ -156,8 +130,8 @@ All UI is built from the shared design system at the repo root, imported by the 
 - `tokens.css` — colour (light + dark via `data-theme` on `<html>`), type, spacing, radius, motion tokens and `op-`-prefixed component classes. Loaded first in `src/main.tsx`, before `App.css` and page CSS.
 - `Icon.tsx` / `iconPaths.ts` — the only icon source (`<Icon name="…" />`). Add new glyphs to `iconPaths.ts`; never use emoji, text glyphs (✕ ▾ ▸ −) or pasted inline SVGs.
 - `ui.tsx` — `Button`, `IconButton` (label required), `Badge`, `Tag`, `Avatar`, `Menu`/`MenuButton`, `Select`, `SegmentedControl`, `Modal`, `PanelHeader`, `EmptyState`.
-- `AppTopBar.tsx` (shared top bar on every screen), `Logo.tsx`, `theme.ts` (`useTheme`), `SignedOut.tsx`.
-- `workspace.tsx` — **mock** users / workspaces / roles / project→workspace mapping, browser-only (`localStorage` key `openprism-mock-workspaces-v1`). No backend auth exists; replace the data source here when it does.
+- `AppTopBar.tsx` (shared top bar on every screen; workspace switcher + account menu, with a guest variant), `Logo.tsx`, `theme.ts` (`useTheme`), `AuthScreen.tsx` (sign-in / create-account screen; `FieldError` in `ui.tsx` is the shared inline validation message).
+- `workspace.tsx` — the **contract** between the UI and whatever supplies accounts/workspaces: types (`Workspace`, `WorkspaceRole`, `AccountUser`, …), `WorkspaceContextValue`, `<WorkspaceProvider value={…}>` and `useWorkspace()`. It knows nothing about the API; `apps/frontend/src/auth` supplies the real value. Action methods are async and reject with a user-presentable `Error`; components must handle the rejection (see `MembersSection` in `ProjectPage.tsx`).
 
 Rules when writing UI:
 - Use tokens (`var(--surface)`, `var(--text-2)`, `var(--accent)`…), never hex/rgba literals.
@@ -167,7 +141,7 @@ Rules when writing UI:
 
 `app/App.css` holds remaining legacy page styles (already mapped onto tokens). New page-level styles go in a page stylesheet such as `app/pages.css` or `app/editor-shell.css`.
 
-The static reference for the target look (style guide `design-system.html` + clickable prototype `index.html`) lives in the Open Design project, outside this repo.
+The static reference for the target look lives in `design/reference/`: `design-system.html` (living style guide) and `index.html` (clickable prototype of the workspace home + editor shell), sharing `openprism.css` and `icons.js`. Open them directly in a browser; they are standalone HTML, not part of the Vite build. If the React code and the reference disagree on tokens, `design/tokens.css` is the source of truth.
 
 ### Templates (`templates/`)
 
@@ -175,4 +149,4 @@ Built-in conference templates (ACL, CVPR, NeurIPS, ICML) registered in `template
 
 ### Devcontainer
 
-`.devcontainer/` builds a Node 20 image with TexLive packages installed via apt, mounts `/home/node/.claude` as a named Docker volume for Claude Code config persistence, adds the docker-in-docker feature (so `docker compose` runs inside it), and forwards ports 5173 (Vite), 8787 (Node), 8000 (Django), 5432 (Postgres), 6379 (Redis), 3900 (Garage S3). `postCreateCommand` chowns that volume to the `node` user before `npm install` — a fresh volume is created root-owned by Docker on first mount, which breaks any tool needing to write there until it's chowned.
+`.devcontainer/` builds a Node 20 image with TexLive packages installed via apt, mounts `/home/node/.claude` as a named Docker volume for Claude Code config persistence, adds the docker-in-docker feature (so `docker compose` runs inside it), and forwards ports 5173 (Vite dev), 8080 (nginx app), 8000 (API), 5432 (Postgres), 6379 (Redis), 3900 (Garage S3). `postCreateCommand` chowns that volume to the `node` user before `npm install` — a fresh volume is created root-owned by Docker on first mount, which breaks any tool needing to write there until it's chowned.

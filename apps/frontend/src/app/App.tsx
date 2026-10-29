@@ -1,20 +1,86 @@
-import { Navigate, Route, Routes } from 'react-router-dom';
+import { useMemo } from 'react';
+import { Navigate, Route, Routes, useLocation, useParams, useSearchParams } from 'react-router-dom';
+import { WorkspaceProvider } from '@design';
 import EditorPage from './EditorPage';
 import LandingPage from './LandingPage';
 import ProjectPage from './ProjectPage';
 import CollabJoinPage from './CollabJoinPage';
-import { SignedOut, useWorkspace } from '@design';
+import LoginPage, { safeNext } from './LoginPage';
+import { useAuth } from '../auth/AuthProvider';
+import type { GuestInfo } from '../auth/AuthProvider';
+import { guestWorkspaces, useAccountWorkspaces } from '../auth/useWorkspaceValue';
+import { LoadFailed, Splash } from '../auth/Screens';
+import type { Account } from '../api/client';
 
 export default function App() {
-  const { signedIn } = useWorkspace();
-  if (!signedIn) return <SignedOut />;
+  const { state } = useAuth();
+  switch (state.status) {
+    case 'loading':
+      return <Splash />;
+    case 'anonymous':
+      return <AnonymousRoutes />;
+    case 'guest':
+      return <GuestRoutes guest={state.guest} />;
+    case 'user':
+      return <AccountRoutes account={state.account} />;
+  }
+}
+
+/** Not signed in: the landing page, sign-in/registration, and invite links. Everything else asks for a login. */
+function AnonymousRoutes() {
+  const { pathname, search } = useLocation();
   return (
     <Routes>
       <Route path="/" element={<LandingPage />} />
-      <Route path="/projects" element={<ProjectPage />} />
-      <Route path="/editor/:projectId" element={<EditorPage />} />
+      <Route path="/login" element={<LoginPage />} />
+      <Route path="/register" element={<LoginPage />} />
       <Route path="/collab" element={<CollabJoinPage />} />
-      <Route path="*" element={<Navigate to="/projects" replace />} />
+      <Route path="*" element={<Navigate to={`/login?next=${encodeURIComponent(pathname + search)}`} replace />} />
     </Routes>
+  );
+}
+
+/** Joined through an invite link: that one project, nothing else. */
+function GuestRoutes({ guest }: { guest: GuestInfo }) {
+  const { leaveGuest } = useAuth();
+  const value = useMemo(() => guestWorkspaces(guest, leaveGuest), [guest, leaveGuest]);
+  return (
+    <WorkspaceProvider value={value}>
+      <Routes>
+        <Route path="/editor/:projectId" element={<GuestEditor guest={guest} />} />
+        <Route path="/collab" element={<CollabJoinPage />} />
+        <Route path="/login" element={<LoginPage />} />
+        <Route path="/register" element={<LoginPage />} />
+        <Route path="*" element={<Navigate to={`/editor/${guest.projectId}`} replace />} />
+      </Routes>
+    </WorkspaceProvider>
+  );
+}
+
+function GuestEditor({ guest }: { guest: GuestInfo }) {
+  const { projectId } = useParams();
+  return projectId === guest.projectId ? <EditorPage /> : <Navigate to={`/editor/${guest.projectId}`} replace />;
+}
+
+/** Signed in: the real app, with the account's workspaces loaded before anything renders. */
+function AccountRoutes({ account }: { account: Account }) {
+  const { signOut } = useAuth();
+  const { value, error, retry } = useAccountWorkspaces(account, () => void signOut());
+  const [params] = useSearchParams();
+  if (error) return <LoadFailed message={error} onRetry={retry} onSignOut={() => void signOut()} />;
+  if (!value) return <Splash />;
+  const afterLogin = safeNext(params.get('next')) ?? '/projects';
+  return (
+    <WorkspaceProvider value={value}>
+      <Routes>
+        <Route path="/" element={<LandingPage />} />
+        <Route path="/projects" element={<ProjectPage />} />
+        <Route path="/editor/:projectId" element={<EditorPage />} />
+        <Route path="/collab" element={<CollabJoinPage />} />
+        <Route path="/login" element={<Navigate to={afterLogin} replace />} />
+        <Route path="/register" element={<Navigate to={afterLogin} replace />} />
+        <Route path="*" element={<Navigate to="/projects" replace />} />
+      </Routes>
+    </WorkspaceProvider>
   );
 }

@@ -235,15 +235,19 @@ function MembersSection({
     return null;
   };
 
-  const onInvite = (e: FormEvent) => {
+  const onInvite = async (e: FormEvent) => {
     e.preventDefault();
     const err = validateEmail(email, true);
     setEmailError(err);
     if (err) return;
     const v = email.trim();
-    ws.inviteMember(v, role);
-    setEmail('');
-    onStatus(t('Invitation sent to {{email}}', { email: v }));
+    try {
+      await ws.inviteMember(v, role);
+      setEmail('');
+      onStatus(t('Invitation sent to {{email}}', { email: v }));
+    } catch (error) {
+      setEmailError((error as Error).message);
+    }
   };
 
   return (
@@ -310,7 +314,7 @@ function MembersSection({
           <tbody>
             {w.members.map((m) => {
               const u = ws.users[m.userId] || { id: m.userId, name: m.userId, email: '', color: undefined };
-              const isMe = m.userId === 'me';
+              const isMe = m.userId === ws.user.id;
               const locked = !admin || m.role === 'Owner' || isMe;
               return (
                 <tr key={m.userId}>
@@ -332,7 +336,7 @@ function MembersSection({
                         value={m.role}
                         options={roleOptions}
                         ariaLabel={t('Role for {{name}}', { name: u.name })}
-                        onChange={(r) => ws.setMemberRole(m.userId, r)}
+                        onChange={(r) => ws.setMemberRole(m.userId, r).catch((err) => onStatus(err.message))}
                       />
                     )}
                   </td>
@@ -351,8 +355,9 @@ function MembersSection({
                             message: t('They will lose access to the projects in {{workspace}}.', { workspace: w.name }),
                             confirmLabel: t('Remove member'),
                             onConfirm: () => {
-                              ws.removeMember(m.userId);
-                              onStatus(t('{{name}} was removed from {{workspace}}', { name: u.name, workspace: w.name }));
+                              ws.removeMember(m.userId)
+                                .then(() => onStatus(t('{{name}} was removed from {{workspace}}', { name: u.name, workspace: w.name })))
+                                .catch((err) => onStatus(err.message));
                             }
                           })
                         }
@@ -396,13 +401,17 @@ function SettingsSection({
     setNameError(null);
   }, [w.id, w.name]);
 
-  const onSave = (e: FormEvent) => {
+  const onSave = async (e: FormEvent) => {
     e.preventDefault();
     const err = validateWorkspaceName(name, ws.workspaces, w.id, t);
     setNameError(err);
     if (err) return;
-    ws.renameWorkspace(w.id, name.trim());
-    onStatus(t('Workspace renamed'));
+    try {
+      await ws.renameWorkspace(w.id, name.trim());
+      onStatus(t('Workspace renamed'));
+    } catch (error) {
+      setNameError((error as Error).message);
+    }
   };
 
   return (
@@ -459,9 +468,12 @@ function SettingsSection({
                   confirmLabel: t('Leave workspace'),
                   onConfirm: () => {
                     const leftName = w.name;
-                    ws.leaveWorkspace(w.id);
-                    onLeft();
-                    onStatus(t('You left {{workspace}}', { workspace: leftName }));
+                    ws.leaveWorkspace(w.id)
+                      .then(() => {
+                        onLeft();
+                        onStatus(t('You left {{workspace}}', { workspace: leftName }));
+                      })
+                      .catch((err) => onStatus(err.message));
                   }
                 })
               }
@@ -484,12 +496,16 @@ function NewWorkspaceModal({ onClose, onCreated }: { onClose: () => void; onCrea
   const [name, setName] = useState('');
   const [error, setError] = useState<string | null>(null);
 
-  const submit = (e?: FormEvent) => {
+  const submit = async (e?: FormEvent) => {
     e?.preventDefault();
     const err = validateWorkspaceName(name, ws.workspaces, null, t);
     setError(err);
     if (err) return;
-    onCreated(ws.createWorkspace(name.trim()));
+    try {
+      onCreated(await ws.createWorkspace(name.trim()));
+    } catch (error) {
+      setError((error as Error).message);
+    }
   };
 
   return (
@@ -625,8 +641,8 @@ export default function ProjectPage() {
     setActiveTag(null);
   }, [activeWs.id]);
 
-  /** Projects that belong to the active (mock) workspace. Real projects default to Personal. */
-  const wsProjects = projects.filter((p) => ws.workspaceOfProject(p.id) === activeWs.id);
+  /** Projects in the active workspace. */
+  const wsProjects = projects.filter((p) => p.workspaceId === activeWs.id);
 
   const allTags = Array.from(new Set(wsProjects.flatMap((p) => p.tags || []))).sort();
 
@@ -666,11 +682,6 @@ export default function ProjectPage() {
     return list;
   }, [templates, galleryCat, galleryFeatured, gallerySearch]);
 
-  /** New/imported projects land in whichever workspace is active. */
-  const assignToActiveWorkspace = (projectId: string) => {
-    ws.moveProject(projectId, activeWs.id);
-  };
-
   const openCreate = () => {
     setCreateError(null);
     setCreateOpen(true);
@@ -684,8 +695,7 @@ export default function ProjectPage() {
     }
     setCreating(true);
     try {
-      const created = await createProject({ name, template: createTemplate || undefined });
-      assignToActiveWorkspace(created.id);
+      const created = await createProject({ name, template: createTemplate || undefined, workspaceId: activeWs.id });
       setCreateOpen(false);
       setCreateName('');
       await loadProjects();
@@ -807,8 +817,7 @@ export default function ProjectPage() {
     const tpl = templates.find((x) => x.id === tplId);
     const name = createName.trim() || tpl?.label || 'Untitled';
     try {
-      const created = await createProject({ name, template: tplId });
-      assignToActiveWorkspace(created.id);
+      const created = await createProject({ name, template: tplId, workspaceId: activeWs.id });
       setCreateName('');
       await loadProjects();
       navigate(`/editor/${created.id}`);
@@ -840,7 +849,6 @@ export default function ProjectPage() {
     try {
       const res = await copyProject(id, `${originalName} (Copy)`);
       if (!res.ok || !res.project) throw new Error(res.error || 'Copy failed');
-      ws.moveProject(res.project.id, ws.workspaceOfProject(id));
       await loadProjects();
     } catch (err) {
       setStatus(t('复制失败: {{error}}', { error: String(err) }));
@@ -850,11 +858,10 @@ export default function ProjectPage() {
   const handleImportZip = async (file: File) => {
     setImporting(true);
     try {
-      const res = await importZip({ file, projectName: file.name.replace(/\.zip$/i, '') || t('Imported Project') });
+      const res = await importZip({ file, projectName: file.name.replace(/\.zip$/i, '') || t('Imported Project'), workspaceId: activeWs.id });
       if (!res.ok || !res.project) {
         throw new Error(res.error || t('导入失败'));
       }
-      assignToActiveWorkspace(res.project.id);
       setImportOpen(false);
       await loadProjects();
       navigate(`/editor/${res.project.id}`);
@@ -874,13 +881,12 @@ export default function ProjectPage() {
     setImportProgress({ phase: 'download', percent: 0 });
     try {
       const res = await importArxivSSE(
-        { arxivIdOrUrl: arxivInput.trim() },
+        { arxivIdOrUrl: arxivInput.trim(), workspaceId: activeWs.id },
         (prog) => setImportProgress(prog)
       );
       if (!res.ok || !res.project) {
         throw new Error(res.error || t('导入失败'));
       }
-      assignToActiveWorkspace(res.project.id);
       setArxivInput('');
       setImportOpen(false);
       await loadProjects();
@@ -940,7 +946,7 @@ export default function ProjectPage() {
         { label: t('永久删除'), icon: 'trash', danger: true, onSelect: () => handlePermanentDelete(project.id, project.name) },
       ];
     }
-    const current = ws.workspaceOfProject(project.id);
+    const current = project.workspaceId;
     const moveItems: MenuEntry[] = ws.workspaces.length > 1
       ? [
           { type: 'sep' },
@@ -951,8 +957,12 @@ export default function ProjectPage() {
             checked: w.id === current,
             disabled: w.id === current,
             onSelect: () => {
-              ws.moveProject(project.id, w.id);
-              setStatus(t('Moved {{project}} to {{workspace}}', { project: project.name, workspace: w.name }));
+              ws.moveProject(project.id, w.id)
+                .then(() => {
+                  setStatus(t('Moved {{project}} to {{workspace}}', { project: project.name, workspace: w.name }));
+                  return loadProjects();
+                })
+                .catch((err) => setStatus(t('Could not move {{project}}: {{error}}', { project: project.name, error: err.message })));
             }
           }))
         ]
@@ -1308,7 +1318,6 @@ export default function ProjectPage() {
           </div>
 
           <div className="home-side-spacer" />
-          <span className="op-mock-note home-mock-note">{t('Workspaces and members are mocked locally.')}</span>
         </aside>
 
         {/* ── Main Content ── */}
