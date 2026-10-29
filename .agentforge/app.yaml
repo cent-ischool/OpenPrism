@@ -10,7 +10,7 @@ build:
 services:
   api:
     image: openprism-api
-    command: ["uvicorn", "config.asgi:application", "--host", "0.0.0.0", "--port", "8000"]
+    command: ["sh", "forge-entrypoint.sh", "uvicorn", "config.asgi:application", "--host", "0.0.0.0", "--port", "8000"]
     port: 8000
     expose: true
     healthcheck:
@@ -36,7 +36,7 @@ objectStorage:
     openprism: {}
 
 migrations:
-  command: ["python", "manage.py", "migrate", "--noinput"]
+  command: ["sh", "forge-entrypoint.sh", "python", "manage.py", "migrate", "--noinput"]
 
 tests:
   django:
