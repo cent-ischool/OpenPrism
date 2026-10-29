@@ -63,4 +63,21 @@ test.describe('LaTeX editor intelligence', () => {
     const flagged = await page.locator('.cm-lintRange-warning').allInnerTexts();
     expect(flagged.sort()).toEqual(['ghost', 'nope']);
   });
+
+  test('popups follow the dark theme', async ({ page }) => {
+    await page.evaluate(() => {
+      window.localStorage.setItem('openprism-theme', 'dark');
+      document.documentElement.setAttribute('data-theme', 'dark');
+    });
+    await typeAtEnd(page, '\n\\cite{kn');
+    const popup = page.locator('.cm-tooltip-autocomplete');
+    await expect(popup).toBeVisible();
+    const [bg, fg] = await popup.evaluate((el) => {
+      const cs = getComputedStyle(el);
+      const lum = (c: string) => c.match(/\d+(\.\d+)?/g)!.slice(0, 3).map(Number).reduce((a, b) => a + b, 0) / 3;
+      return [lum(cs.backgroundColor), lum(getComputedStyle(el.querySelector('li')!).color)];
+    });
+    expect(bg).toBeLessThan(80); // dark surface
+    expect(fg).toBeGreaterThan(150); // light text
+  });
 });

@@ -880,7 +880,32 @@ const editorTheme = EditorView.theme(
     },
     '.cm-selectionBackground': {
       background: 'var(--sel)'
-    }
+    },
+    // Popups (completion list, lint and hover tooltips) are drawn by CodeMirror with its light defaults; bind them to tokens.
+    '.cm-tooltip': {
+      background: 'var(--surface)',
+      color: 'var(--text)',
+      border: '1px solid var(--border-strong)',
+      borderRadius: 'var(--r-md, 8px)',
+      boxShadow: 'var(--shadow-2)',
+      overflow: 'hidden'
+    },
+    '.cm-tooltip .cm-tooltip-arrow:before, .cm-tooltip .cm-tooltip-arrow:after': { display: 'none' },
+    '.cm-tooltip-autocomplete > ul': { fontFamily: 'var(--font-mono)', maxHeight: '16em' },
+    '.cm-tooltip-autocomplete > ul > li': { padding: '2px 8px', color: 'var(--text)' },
+    '.cm-tooltip-autocomplete > ul > li[aria-selected]': { background: 'var(--sel)', color: 'var(--text)' },
+    '.cm-completionDetail': { color: 'var(--text-3)', fontStyle: 'normal', marginLeft: '0.8em' },
+    '.cm-completionMatchedText': { color: 'var(--accent)', textDecoration: 'none', fontWeight: '600' },
+    '.cm-completionInfo': {
+      background: 'var(--surface)',
+      color: 'var(--text-2)',
+      border: '1px solid var(--border-strong)'
+    },
+    '.cm-tooltip-lint': { padding: '0' },
+    '.cm-diagnostic': { color: 'var(--text)', padding: '6px 10px' },
+    '.cm-diagnostic-warning': { borderLeft: '4px solid var(--warning)' },
+    '.cm-diagnostic-error': { borderLeft: '4px solid var(--danger)' },
+    '.cm-panels': { background: 'var(--surface-2)', color: 'var(--text)', borderColor: 'var(--border)' }
   },
   { dark: false }
 );
