@@ -1,0 +1,751 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Open Prism — Design System</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500&family=Source+Serif+4:opsz,wght@8..60,400;8..60,600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="openprism.css">
+<script src="icons.js"></script>
+<style>
+  body { background: var(--surface); }
+  .ds-top {
+    position: sticky; top: 0; z-index: 20;
+    display: flex; align-items: center; gap: var(--sp-3);
+    height: 56px; padding: 0 var(--sp-6);
+    background: color-mix(in srgb, var(--surface) 92%, transparent);
+    backdrop-filter: blur(8px); border-bottom: 1px solid var(--border);
+  }
+  .ds-top .ver { color: var(--text-3); font-size: var(--fs-xs); }
+  .ds-shell { display: grid; grid-template-columns: 232px minmax(0, 1fr); max-width: 1280px; margin: 0 auto; }
+  .ds-toc { position: sticky; top: 56px; align-self: start; height: calc(100vh - 56px); overflow: auto; padding: var(--sp-6) var(--sp-4); border-right: 1px solid var(--border); }
+  .ds-toc a { display: block; padding: 6px var(--sp-2); border-radius: var(--r-xs); color: var(--text-2); text-decoration: none; font-size: var(--fs-sm); }
+  .ds-toc a.sub { padding-left: var(--sp-5); color: var(--text-3); font-size: var(--fs-xs); }
+  @media (hover: hover) { .ds-toc a:hover { background: var(--surface-2); color: var(--text); } }
+  .ds-toc a[aria-current="true"] { color: var(--accent-soft-fg); background: var(--accent-soft); }
+  .ds-main { padding: var(--sp-10) var(--sp-10) 120px; min-width: 0; }
+  .ds-hero { max-width: 68ch; display: grid; gap: var(--sp-3); padding-bottom: var(--sp-8); border-bottom: 1px solid var(--border); }
+  .ds-hero h1 { font-size: var(--fs-3xl); line-height: var(--lh-tight); font-weight: var(--fw-semibold); letter-spacing: -0.02em; }
+  .ds-hero p { font-size: var(--fs-lg); line-height: var(--lh-read); color: var(--text-2); }
+  .ds-sec { padding: var(--sp-12) 0 var(--sp-4); border-bottom: 1px solid var(--border); scroll-margin-top: 64px; }
+  .ds-sec > h2 { font-size: var(--fs-2xl); font-weight: var(--fw-semibold); letter-spacing: -0.01em; margin-bottom: var(--sp-2); }
+  .ds-sec > .lead { max-width: 68ch; color: var(--text-2); font-size: var(--fs-lg); line-height: var(--lh-read); margin-bottom: var(--sp-6); }
+  .ds-sub { margin: var(--sp-8) 0 var(--sp-3); font-size: var(--fs-lg); font-weight: var(--fw-semibold); scroll-margin-top: 64px; }
+  .ds-note { max-width: 68ch; color: var(--text-2); line-height: var(--lh-read); margin-bottom: var(--sp-4); }
+  .ds-card { border: 1px solid var(--border); border-radius: var(--r-lg); background: var(--surface); overflow: hidden; }
+  .ds-demo { padding: var(--sp-6); background: var(--bg); display: flex; flex-wrap: wrap; gap: var(--sp-3); align-items: center; }
+  .ds-demo.col { flex-direction: column; align-items: stretch; }
+  .ds-caption { padding: var(--sp-3) var(--sp-4); border-top: 1px solid var(--border); font-size: var(--fs-xs); color: var(--text-3); }
+  .ds-caption code, .ds-note code, td code { font-family: var(--font-mono); font-size: 0.92em; color: var(--text); background: var(--surface-2); padding: 1px 5px; border-radius: var(--r-xs); }
+  .principles { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: var(--sp-4); margin-top: var(--sp-6); }
+  .principle { padding: var(--sp-4); border: 1px solid var(--border); border-radius: var(--r-md); display: grid; gap: var(--sp-1); }
+  .principle strong { display: block; font-size: var(--fs-md); }
+  .principle span { display: block; color: var(--text-2); font-size: var(--fs-sm); line-height: var(--lh-ui); }
+
+  /* colour */
+  .theme-pair { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--sp-4); }
+  .theme-pane { border: 1px solid var(--border); border-radius: var(--r-lg); background: var(--surface); color: var(--text); padding: var(--sp-4); display: grid; gap: var(--sp-4); }
+  .theme-pane h3 { font-size: var(--fs-sm); font-weight: var(--fw-semibold); }
+  .sw-group { display: grid; gap: var(--sp-2); }
+  .sw-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(116px, 1fr)); gap: var(--sp-2); }
+  .sw { border: 1px solid var(--border); border-radius: var(--r-md); overflow: hidden; background: var(--surface); }
+  .sw-chip { height: 44px; border-bottom: 1px solid var(--border); }
+  .sw-meta { padding: 6px 8px; display: grid; gap: 1px; }
+  .sw-name { display: block; font-family: var(--font-mono); font-size: var(--fs-2xs); color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .sw-val { display: block; font-family: var(--font-mono); font-size: var(--fs-2xs); color: var(--text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  /* tables */
+  .ds-table-wrap { overflow-x: auto; border: 1px solid var(--border); border-radius: var(--r-lg); }
+  table.ds-table { width: 100%; border-collapse: collapse; font-size: var(--fs-sm); }
+  .ds-table th { text-align: left; font-size: var(--fs-2xs); text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-3); font-weight: var(--fw-semibold); padding: var(--sp-2) var(--sp-4); background: var(--surface-2); border-bottom: 1px solid var(--border); white-space: nowrap; }
+  .ds-table td { padding: var(--sp-3) var(--sp-4); border-bottom: 1px solid var(--border); vertical-align: middle; }
+  .ds-table tr:last-child td { border-bottom: 0; }
+
+  /* spacing / radius */
+  .space-bar { height: 12px; background: var(--accent); border-radius: 2px; }
+  .radius-row { display: flex; flex-wrap: wrap; gap: var(--sp-4); }
+  .radius-box { width: 96px; display: grid; gap: var(--sp-2); justify-items: center; font-size: var(--fs-xs); color: var(--text-2); }
+  .radius-box > div { width: 72px; height: 56px; background: var(--surface); border: 1px solid var(--border-strong); }
+  .elev-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: var(--sp-4); }
+  .elev { height: 96px; border-radius: var(--r-md); background: var(--surface); display: grid; place-items: center; text-align: center; font-size: var(--fs-xs); color: var(--text-2); padding: var(--sp-2); }
+
+  /* motion demo */
+  .motion-track { position: relative; height: 40px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-md); overflow: hidden; flex: 1 1 260px; }
+  .motion-dot { position: absolute; top: 8px; left: 8px; width: 24px; height: 24px; border-radius: var(--r-sm); background: var(--accent); transition: transform var(--d) var(--e); }
+  .motion-track.go .motion-dot { transform: translateX(calc(var(--w, 220px))); }
+
+  /* icons */
+  .icon-group-title { font-size: var(--fs-xs); font-weight: var(--fw-semibold); color: var(--text-3); text-transform: uppercase; letter-spacing: 0.04em; margin: var(--sp-5) 0 var(--sp-2); }
+  .icon-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(112px, 1fr)); gap: var(--sp-2); }
+  .icon-cell { display: grid; justify-items: center; gap: var(--sp-2); padding: var(--sp-3) var(--sp-2); border: 1px solid var(--border); border-radius: var(--r-md); background: var(--surface); color: var(--text); --od-icon-size: 20px; }
+  @media (hover: hover) { .icon-cell:hover { border-color: var(--accent); } }
+  .icon-cell code { display: block; max-width: 100%; font-family: var(--font-mono); font-size: var(--fs-2xs); color: var(--text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .size-row { display: flex; align-items: flex-end; gap: var(--sp-6); color: var(--text); }
+  .size-row > div { display: grid; justify-items: center; gap: var(--sp-2); font-size: var(--fs-xs); color: var(--text-3); }
+  .do-dont { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--sp-4); }
+  .dd { border: 1px solid var(--border); border-radius: var(--r-lg); overflow: hidden; }
+  .dd-demo { padding: var(--sp-5); background: var(--bg); display: flex; flex-wrap: wrap; gap: var(--sp-2); align-items: center; min-height: 88px; }
+  .dd-label { display: flex; align-items: center; gap: var(--sp-2); padding: var(--sp-3) var(--sp-4); font-size: var(--fs-sm); border-top: 3px solid var(--success); --od-icon-size: 16px; }
+  .dd.dont .dd-label { border-top-color: var(--danger); }
+  .dd-label .od-icon { color: var(--success); }
+  .dd.dont .dd-label .od-icon { color: var(--danger); }
+  .fake-glyph { font-size: 14px; color: var(--text-2); }
+
+  /* components demos */
+  .demo-panel { width: 280px; border: 1px solid var(--border); border-radius: var(--r-md); overflow: hidden; }
+  .anno { display: grid; gap: var(--sp-2); font-size: var(--fs-sm); color: var(--text-2); max-width: 340px; }
+  .anno b { color: var(--text); font-weight: var(--fw-semibold); }
+  .static-menu { position: static; }
+  .toast.static { animation: none; max-width: 360px; }
+
+  /* shell diagram */
+  .shell-diagram { display: grid; grid-template-columns: 36px 140px minmax(0, 1fr) 160px 36px; grid-template-rows: 36px 200px 22px; gap: 2px; background: var(--border-strong); border: 1px solid var(--border-strong); border-radius: var(--r-md); overflow: hidden; font-size: var(--fs-2xs); }
+  .shell-diagram > div { background: var(--surface); display: grid; place-items: center; text-align: center; padding: 4px; color: var(--text-2); }
+  .shell-diagram .sd-top { grid-column: 1 / -1; background: var(--surface); }
+  .shell-diagram .sd-rail { background: var(--bg); writing-mode: vertical-rl; }
+  .shell-diagram .sd-panel { background: var(--surface-2); }
+  .shell-diagram .sd-main { background: var(--surface); }
+  .shell-diagram .sd-status { grid-column: 1 / -1; background: var(--bg); }
+  .shell-diagram b { display: block; color: var(--text); font-weight: var(--fw-semibold); }
+
+  .model { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--sp-3); align-items: stretch; }
+  .model-node { border: 1px solid var(--border); border-radius: var(--r-md); padding: var(--sp-4); background: var(--surface); display: grid; gap: var(--sp-2); align-content: start; --od-icon-size: 20px; }
+  .model-node .od-icon { color: var(--accent); }
+  .model-node strong { display: block; }
+  .model-node span { display: block; font-size: var(--fs-sm); color: var(--text-2); }
+  .yes { color: var(--success); --od-icon-size: 16px; }
+  .no { color: var(--text-3); --od-icon-size: 16px; }
+
+  @media (max-width: 1023px) {
+    .ds-shell { grid-template-columns: minmax(0, 1fr); }
+    .ds-toc { display: none; }
+    .ds-main { padding: var(--sp-8) var(--sp-6) 96px; }
+  }
+  @media (max-width: 767px) {
+    .theme-pair, .do-dont, .model { grid-template-columns: minmax(0, 1fr); }
+    .ds-main { padding: var(--sp-6) var(--sp-4) 80px; }
+    .ds-top { padding: 0 var(--sp-4); }
+    .ds-top .ver { display: none; }
+    .shell-diagram { grid-template-columns: 24px 70px minmax(0, 1fr) 70px 24px; }
+  }
+</style>
+</head>
+<body>
+
+<header class="ds-top">
+  <a class="brand" href="index.html">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 21.5 19.5h-19z" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linejoin="round"/><path d="M12 3 16.75 11.25 12 19.5z" fill="var(--accent)"/></svg>
+    <span>Open Prism</span>
+  </a>
+  <span class="ver">Design System · v0.1</span>
+  <div class="od-fill"></div>
+  <a class="btn btn-ghost btn-sm" href="index.html"><svg class="od-icon" aria-hidden="true"><use href="#i-arrow-up-right"/></svg>Open prototype</a>
+  <button class="btn btn-icon btn-sm btn-ghost" id="themeBtn" type="button" aria-label="Toggle dark mode" data-tip="Toggle theme">
+    <svg class="od-icon" aria-hidden="true"><use href="#i-moon"/></svg>
+  </button>
+</header>
+
+<div class="ds-shell">
+  <nav class="ds-toc" aria-label="Sections">
+    <a href="#principles">Principles</a>
+    <a href="#color">Color</a>
+    <a href="#type">Typography</a>
+    <a href="#space">Spacing, radius &amp; elevation</a>
+    <a href="#motion">Motion</a>
+    <a href="#icons">Icons</a>
+    <a class="sub" href="#icon-rules">Usage rules</a>
+    <a class="sub" href="#icon-migrate">Migration</a>
+    <a href="#components">Components</a>
+    <a class="sub" href="#c-buttons">Buttons</a>
+    <a class="sub" href="#c-forms">Form fields</a>
+    <a class="sub" href="#c-seg">Segmented &amp; tabs</a>
+    <a class="sub" href="#c-badges">Status &amp; badges</a>
+    <a class="sub" href="#c-menus">Menus</a>
+    <a class="sub" href="#c-avatars">Avatars &amp; presence</a>
+    <a class="sub" href="#c-feedback">Toasts &amp; dialogs</a>
+    <a class="sub" href="#c-panel">Panel anatomy</a>
+    <a href="#layout">Layout</a>
+    <a class="sub" href="#l-panels">Collapsible panels</a>
+    <a class="sub" href="#l-menus">Menu map</a>
+    <a class="sub" href="#l-keys">Shortcuts</a>
+    <a href="#accounts">Users, workspaces &amp; projects</a>
+    <a href="#copy">Writing UI copy</a>
+  </nav>
+
+  <main class="ds-main">
+    <section class="ds-hero" id="principles">
+      <h1>Open Prism design system</h1>
+      <p>The shared language for Open Prism's LaTeX + AI workspace. Every screen draws from the same tokens, one icon family, and a small set of components so the editor, the assistant, and workspace screens look and behave like one product.</p>
+    </section>
+
+    <div class="principles">
+      <div class="principle"><strong>The paper is the hero</strong><span>Chrome is neutral and quiet. Colour and serif type are saved for the document and for the one action that matters.</span></div>
+      <div class="principle"><strong>One accent, used sparingly</strong><span>Terracotta marks the primary action, the current selection, and focus — nothing else.</span></div>
+      <div class="principle"><strong>Panels, not pages</strong><span>Tools live in collapsible side panels around the editor, so writers never lose their place.</span></div>
+      <div class="principle"><strong>Every state is designed</strong><span>Loading, empty, error, read-only and disabled are part of each component, not afterthoughts.</span></div>
+    </div>
+
+    <!-- ============ COLOR ============ -->
+    <section class="ds-sec" id="color">
+      <h2>Color</h2>
+      <p class="lead">Semantic tokens only — components never use raw hex values. Light and dark are tuned separately; every text token meets 4.5:1 against <code>--surface</code>.</p>
+      <div class="theme-pair">
+        <div class="theme-pane" data-theme="light" data-swatches><h3>Light</h3></div>
+        <div class="theme-pane" data-theme="dark" data-swatches><h3>Dark</h3></div>
+      </div>
+      <h3 class="ds-sub">Roles</h3>
+      <div class="ds-table-wrap">
+        <table class="ds-table">
+          <thead><tr><th>Token</th><th>Use for</th><th>Never use for</th></tr></thead>
+          <tbody>
+            <tr><td><code>--bg</code></td><td>Shell behind panels: rails, status bar, gutters</td><td>Reading surfaces</td></tr>
+            <tr><td><code>--surface</code> / <code>-2</code> / <code>-3</code></td><td>Panels &amp; editor → hover &amp; wells → pressed &amp; neutral selection</td><td>Communicating status</td></tr>
+            <tr><td><code>--text</code> / <code>-2</code> / <code>-3</code></td><td>Primary copy → secondary labels → meta, placeholders, timestamps</td><td>Hover feedback (hover never lightens text)</td></tr>
+            <tr><td><code>--accent</code></td><td>Primary button, current item marker, focus ring, links</td><td>Decoration, large fills, more than one solid button per area</td></tr>
+            <tr><td><code>--success</code> <code>--warning</code> <code>--danger</code> <code>--info</code></td><td>Compile results, review findings, destructive actions — always with an icon or label</td><td>Brand or category colour</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- ============ TYPE ============ -->
+    <section class="ds-sec" id="type">
+      <h2>Typography</h2>
+      <p class="lead">Three families with distinct jobs: <b>IBM Plex Sans</b> for interface chrome, <b>Source Serif 4</b> for the rendered paper and long reading, <b>JetBrains Mono</b> for LaTeX source, logs and keys.</p>
+      <div class="ds-table-wrap">
+        <table class="ds-table">
+          <thead><tr><th>Token</th><th>Sample</th><th>Size / line height</th><th>Use</th></tr></thead>
+          <tbody>
+            <tr><td><code>--fs-3xl</code></td><td style="font-size:32px;font-weight:600;letter-spacing:-0.02em;line-height:1.25">Projects</td><td class="mono">32 / 1.25 · 600</td><td>Page title (workspace home)</td></tr>
+            <tr><td><code>--fs-2xl</code></td><td style="font-size:24px;font-weight:600;line-height:1.25">Workspace settings</td><td class="mono">24 / 1.25 · 600</td><td>Section heading</td></tr>
+            <tr><td><code>--fs-xl</code></td><td style="font-size:20px;font-weight:600">Retrieval-Augmented Grading</td><td class="mono">20 / 1.3 · 600</td><td>Card &amp; dialog heading</td></tr>
+            <tr><td><code>--fs-lg</code></td><td style="font-size:16px">Reading text in docs and dialogs</td><td class="mono">16 / 1.6 · 400</td><td>Long-form copy, modal titles</td></tr>
+            <tr><td><code>--fs-md</code></td><td style="font-size:14px">Assistant messages, form input</td><td class="mono">14 / 1.45 · 400</td><td>Default UI body</td></tr>
+            <tr><td><code>--fs-sm</code></td><td style="font-size:13px">File tree, menus, buttons</td><td class="mono">13 / 1.45 · 400–500</td><td>Dense chrome</td></tr>
+            <tr><td><code>--fs-xs</code></td><td style="font-size:12px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;color:var(--text-2)">Panel title</td><td class="mono">12 / 1.45 · 600 caps</td><td>Panel titles, field labels, captions</td></tr>
+            <tr><td><code>--fs-2xs</code></td><td style="font-size:11px;color:var(--text-3)">Edited 3 min ago</td><td class="mono">11 / 1.4</td><td>Badges, timestamps, tooltips</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <h3 class="ds-sub">Document &amp; code faces</h3>
+      <div class="theme-pair">
+        <div class="ds-card"><div class="ds-demo col" style="background:var(--page);color:var(--page-ink);font-family:var(--font-doc)">
+          <div style="font-size:20px;font-weight:600;line-height:1.3">3 Method</div>
+          <p style="font-size:16px;line-height:1.6">We cast feedback generation as retrieval over a rubric-aligned exemplar bank, conditioning the grader on the three nearest graded submissions.</p>
+        </div><div class="ds-caption">Source Serif 4 — PDF preview, Review reports</div></div>
+        <div class="ds-card"><div class="ds-demo col mono" style="font-size:13px;line-height:1.6;background:var(--surface)">
+          <div><span style="color:var(--code-cmd)">\section</span>{Method}</div>
+          <div><span style="color:var(--code-comment)">% retrieval step</span></div>
+          <div>Let <span style="color:var(--code-math)">$k = 3$</span> neighbours <span style="color:var(--code-kw)">\cite</span>{lewis2020rag}.</div>
+        </div><div class="ds-caption">JetBrains Mono 13/1.6 — editor, compile log, shortcuts</div></div>
+      </div>
+    </section>
+
+    <!-- ============ SPACE ============ -->
+    <section class="ds-sec" id="space">
+      <h2>Spacing, radius &amp; elevation</h2>
+      <p class="lead">A 4px base unit. Use 8 inside components, 12–16 between related groups, 24+ between sections. Panels are flat: borders separate, shadows are reserved for things that float.</p>
+      <div class="ds-table-wrap">
+        <table class="ds-table" id="spaceTable">
+          <thead><tr><th>Token</th><th>Value</th><th style="width:60%">Scale</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <h3 class="ds-sub">Radius</h3>
+      <div class="radius-row">
+        <div class="radius-box"><div style="border-radius:var(--r-xs)"></div><code>--r-xs 4</code><span>tags, tree rows</span></div>
+        <div class="radius-box"><div style="border-radius:var(--r-sm)"></div><code>--r-sm 6</code><span>buttons, inputs</span></div>
+        <div class="radius-box"><div style="border-radius:var(--r-md)"></div><code>--r-md 8</code><span>menus, cards</span></div>
+        <div class="radius-box"><div style="border-radius:var(--r-lg)"></div><code>--r-lg 12</code><span>dialogs</span></div>
+        <div class="radius-box"><div style="border-radius:var(--r-full);width:56px"></div><code>--r-full</code><span>badges, avatars</span></div>
+      </div>
+      <h3 class="ds-sub">Elevation</h3>
+      <div class="elev-row">
+        <div class="elev" style="border:1px solid var(--border)">Level 0 · border only<br>panels, cards</div>
+        <div class="elev" style="box-shadow:var(--shadow-1);border:1px solid var(--border)">Level 1 · <code>--shadow-1</code><br>selected segment</div>
+        <div class="elev" style="box-shadow:var(--shadow-2)">Level 2 · <code>--shadow-2</code><br>menus, toasts, dialogs</div>
+      </div>
+    </section>
+
+    <!-- ============ MOTION ============ -->
+    <section class="ds-sec" id="motion">
+      <h2>Motion</h2>
+      <p class="lead">Motion only explains a change of state — a panel opening, a menu appearing, a toast arriving. Enter with ease-out, exit with ease-in at about two-thirds of the duration. Everything turns off under reduced motion.</p>
+      <div class="ds-card">
+        <div class="ds-demo col" id="motionDemo">
+          <div class="od-row" style="--od-gap:16px;flex-wrap:wrap"><code style="width:150px">--dur-fast 120ms</code><div class="motion-track" style="--d:120ms;--e:var(--ease-out)"><div class="motion-dot"></div></div></div>
+          <div class="od-row" style="--od-gap:16px;flex-wrap:wrap"><code style="width:150px">--dur-base 180ms</code><div class="motion-track" style="--d:180ms;--e:var(--ease-out)"><div class="motion-dot"></div></div></div>
+          <div class="od-row" style="--od-gap:16px;flex-wrap:wrap"><code style="width:150px">--dur-slow 240ms</code><div class="motion-track" style="--d:240ms;--e:var(--ease-out)"><div class="motion-dot"></div></div></div>
+          <div><button class="btn btn-secondary btn-sm" type="button" id="motionBtn"><svg class="od-icon" aria-hidden="true"><use href="#i-play"/></svg>Play</button></div>
+        </div>
+        <div class="ds-caption">Fast: hover, press, tooltips · Base: menus, switches, panel collapse · Slow: dialogs, toasts</div>
+      </div>
+    </section>
+
+    <!-- ============ ICONS ============ -->
+    <section class="ds-sec" id="icons">
+      <h2>Icons</h2>
+      <p class="lead">One outline family on a 24px grid with a 1.75 stroke, round caps and <code>currentColor</code>. It is Lucide/Feather-compatible, so the inline SVGs already in the editor migrate one-to-one. Icons inherit text colour; status colour comes from the parent.</p>
+      <div class="ds-card">
+        <div class="ds-demo">
+          <div class="size-row">
+            <div><svg class="od-icon" style="--od-icon-size:14px" aria-hidden="true"><use href="#i-sparkles"/></svg>14 · inline in badges, segments</div>
+            <div><svg class="od-icon" style="--od-icon-size:16px" aria-hidden="true"><use href="#i-sparkles"/></svg>16 · buttons, menus, tree</div>
+            <div><svg class="od-icon" style="--od-icon-size:20px" aria-hidden="true"><use href="#i-sparkles"/></svg>20 · rails, toasts</div>
+            <div><svg class="od-icon" style="--od-icon-size:28px" aria-hidden="true"><use href="#i-sparkles"/></svg>28 · empty states only</div>
+          </div>
+        </div>
+        <div class="ds-caption">Markup: <code>&lt;svg class="od-icon"&gt;&lt;use href="#i-sparkles"/&gt;&lt;/svg&gt;</code> — size with <code>--od-icon-size</code>, never with parent selectors.</div>
+      </div>
+      <div id="iconLib"></div>
+
+      <h3 class="ds-sub" id="icon-rules">Usage rules</h3>
+      <div class="do-dont">
+        <div class="dd">
+          <div class="dd-demo">
+            <button class="btn btn-primary" type="button"><svg class="od-icon" aria-hidden="true"><use href="#i-play"/></svg>Compile</button>
+            <button class="btn btn-icon btn-ghost" type="button" aria-label="New file" data-tip="New file"><svg class="od-icon" aria-hidden="true"><use href="#i-file-plus"/></svg></button>
+          </div>
+          <div class="dd-label"><svg class="od-icon" aria-hidden="true"><use href="#i-check-circle"/></svg>Icon + label for primary actions; icon-only buttons always get a tooltip and an accessible name.</div>
+        </div>
+        <div class="dd dont">
+          <div class="dd-demo">
+            <button class="btn btn-secondary" type="button"><span class="fake-glyph" aria-hidden="true">✕</span></button>
+            <button class="btn btn-secondary" type="button"><span class="fake-glyph" aria-hidden="true">▸</span> Files</button>
+            <button class="btn btn-secondary" type="button"><span class="fake-glyph" aria-hidden="true">−</span></button>
+          </div>
+          <div class="dd-label"><svg class="od-icon" aria-hidden="true"><use href="#i-x"/></svg>No Unicode glyphs (✕ ▸ ▾ −) or emoji as icons — they render differently on every OS.</div>
+        </div>
+        <div class="dd">
+          <div class="dd-demo">
+            <span class="badge badge-danger"><svg class="od-icon" aria-hidden="true"><use href="#i-alert-circle"/></svg>2 errors</span>
+            <span class="badge badge-success"><svg class="od-icon" aria-hidden="true"><use href="#i-check-circle"/></svg>Compiled</span>
+          </div>
+          <div class="dd-label"><svg class="od-icon" aria-hidden="true"><use href="#i-check-circle"/></svg>Status pairs colour with an icon and text.</div>
+        </div>
+        <div class="dd dont">
+          <div class="dd-demo">
+            <span style="display:inline-flex;gap:8px;align-items:center;font-weight:600"><svg class="od-icon" aria-hidden="true"><use href="#i-folder"/></svg>Files</span>
+            <span style="display:inline-flex;gap:8px;align-items:center;font-weight:600"><svg class="od-icon" aria-hidden="true"><use href="#i-star"/></svg>Outline</span>
+          </div>
+          <div class="dd-label"><svg class="od-icon" aria-hidden="true"><use href="#i-x"/></svg>No icon beside every heading, and never mix filled and outline icons at the same level.</div>
+        </div>
+      </div>
+
+      <h3 class="ds-sub" id="icon-migrate">Migration from the current code</h3>
+      <p class="ds-note">The current editor has about 50 hand-copied inline SVGs at mixed sizes (14px and 20px, stroke 2) and Unicode glyphs for close, collapse and zoom. Replace them with a single <code>&lt;Icon name="…" /&gt;</code> React component that renders from this set.</p>
+      <div class="ds-table-wrap">
+        <table class="ds-table">
+          <thead><tr><th>Today</th><th>Where</th><th>Replace with</th></tr></thead>
+          <tbody>
+            <tr><td><code>✕</code> text glyph</td><td>Close buttons on sidebar, modals, popovers (11×)</td><td><svg class="od-icon" aria-hidden="true"><use href="#i-x"/></svg> <code>x</code> in <code>.btn-icon.btn-sm</code></td></tr>
+            <tr><td><code>▾</code> / <code>▸</code></td><td>File tree carets</td><td><svg class="od-icon" aria-hidden="true"><use href="#i-chevron-down"/></svg> <code>chevron-down</code>, rotated −90° when closed</td></tr>
+            <tr><td><code>−</code> / <code>+</code></td><td>PDF zoom</td><td><code>zoom-out</code> / <code>zoom-in</code></td></tr>
+            <tr><td>Inline SVG, 14px, stroke 2</td><td>Sidebar tabs (Files, Collab, Images…)</td><td>Rail buttons at 20px — <code>folder</code>, <code>users</code>, <code>image</code>, <code>search</code>, <code>globe</code></td></tr>
+            <tr><td>Inline SVG, 20px, stroke 2</td><td>Review tool buttons</td><td><code>review</code>, <code>book-open</code>, <code>file-text</code> at 16px inside menu items</td></tr>
+            <tr><td>Text-only toolbar buttons</td><td>Insert: Section, Equation, Figure…</td><td>Insert menu with <code>heading</code>, <code>sigma</code>, <code>image</code>, <code>table</code>, <code>quote</code> + labels</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- ============ COMPONENTS ============ -->
+    <section class="ds-sec" id="components">
+      <h2>Components</h2>
+      <p class="lead">These replace the overlapping families in the current code (<code>btn</code>, <code>ios-btn</code>, <code>toolbar-btn</code>, <code>icon-btn</code>, <code>ios-select</code>, <code>ios-dropdown</code>) with one of each.</p>
+
+      <h3 class="ds-sub" id="c-buttons">Buttons</h3>
+      <div class="ds-card">
+        <div class="ds-demo">
+          <button class="btn btn-primary" type="button"><svg class="od-icon" aria-hidden="true"><use href="#i-play"/></svg>Compile</button>
+          <button class="btn btn-secondary" type="button"><svg class="od-icon" aria-hidden="true"><use href="#i-share"/></svg>Share</button>
+          <button class="btn btn-ghost" type="button">Cancel</button>
+          <button class="btn btn-danger" type="button"><svg class="od-icon" aria-hidden="true"><use href="#i-trash"/></svg>Delete project</button>
+          <button class="btn btn-primary" type="button" disabled>Disabled</button>
+          <button class="btn btn-primary is-loading" type="button" aria-busy="true"><svg class="od-icon spin" aria-hidden="true"><use href="#i-loader"/></svg>Compiling…</button>
+        </div>
+        <div class="ds-demo" style="border-top:1px solid var(--border)">
+          <button class="btn btn-secondary btn-sm" type="button">Small</button>
+          <button class="btn btn-secondary" type="button">Medium (default)</button>
+          <button class="btn btn-secondary btn-lg" type="button">Large</button>
+          <button class="btn btn-icon btn-ghost" type="button" aria-label="More actions" data-tip="More actions"><svg class="od-icon" aria-hidden="true"><use href="#i-more"/></svg></button>
+          <button class="btn btn-icon btn-ghost" type="button" aria-label="Split view" aria-pressed="true" data-tip="Toggle (pressed)"><svg class="od-icon" aria-hidden="true"><use href="#i-columns"/></svg></button>
+          <div class="btn-group">
+            <button class="btn btn-primary" type="button"><svg class="od-icon" aria-hidden="true"><use href="#i-play"/></svg>Compile</button>
+            <button class="btn btn-primary" type="button" aria-label="Compile options"><svg class="od-icon" aria-hidden="true"><use href="#i-chevron-down"/></svg></button>
+          </div>
+        </div>
+        <div class="ds-caption">One primary per region. Ghost for toolbar actions, secondary for supporting actions, danger only inside a confirmation. Heights 28 / 32 / 40.</div>
+      </div>
+
+      <h3 class="ds-sub" id="c-forms">Form fields</h3>
+      <div class="ds-card">
+        <div class="ds-demo col" style="max-width:520px">
+          <div class="field">
+            <label for="f1">Project name <span class="req" aria-hidden="true">*</span></label>
+            <input class="input" id="f1" value="Retrieval-Augmented Grading">
+          </div>
+          <div class="field">
+            <label for="f2">Invite by email</label>
+            <input class="input" id="f2" value="lena.park@" aria-invalid="true" aria-describedby="f2e">
+            <span class="field-error" id="f2e"><svg class="od-icon" aria-hidden="true"><use href="#i-alert-circle"/></svg>Enter a full email address, like name@university.edu.</span>
+          </div>
+          <div class="field">
+            <label for="f3">Template</label>
+            <select class="select" id="f3"><option>ACL 2025</option><option>NeurIPS 2025</option><option>CVPR 2025</option><option>ICML 2025</option><option>Blank article</option></select>
+            <span class="field-help">You can switch templates later with Template Transfer.</span>
+          </div>
+          <div class="field">
+            <label for="f4">Search files</label>
+            <div class="input-group"><svg class="od-icon" aria-hidden="true"><use href="#i-search"/></svg><input class="input" id="f4" placeholder="Filename or text"></div>
+          </div>
+          <label class="switch"><input type="checkbox" checked><span class="switch-track"></span>Compile on save</label>
+        </div>
+        <div class="ds-caption">Labels always visible above the field. Errors sit under the field, say what went wrong and how to fix it, and appear on blur, not while typing.</div>
+      </div>
+
+      <h3 class="ds-sub" id="c-seg">Segmented control &amp; tabs</h3>
+      <div class="ds-card">
+        <div class="ds-demo col">
+          <div class="seg" role="group" aria-label="Assistant mode" data-seg>
+            <button type="button" aria-pressed="true"><svg class="od-icon" aria-hidden="true"><use href="#i-chat"/></svg>Chat</button>
+            <button type="button" aria-pressed="false"><svg class="od-icon" aria-hidden="true"><use href="#i-bot"/></svg>Agent</button>
+            <button type="button" aria-pressed="false"><svg class="od-icon" aria-hidden="true"><use href="#i-wrench"/></svg>Tools</button>
+          </div>
+          <div class="tabs" role="tablist" data-tabs>
+            <button class="tab" role="tab" aria-selected="true" type="button">Members</button>
+            <button class="tab" role="tab" aria-selected="false" type="button">Invitations</button>
+            <button class="tab" role="tab" aria-selected="false" type="button">Billing</button>
+          </div>
+        </div>
+        <div class="ds-caption">Segmented = switch a mode within the same view (Chat / Agent / Tools, Editor / Split / PDF). Tabs = switch between sibling pages of content.</div>
+      </div>
+
+      <h3 class="ds-sub" id="c-badges">Status &amp; badges</h3>
+      <div class="ds-card">
+        <div class="ds-demo">
+          <span class="badge badge-success"><svg class="od-icon" aria-hidden="true"><use href="#i-check-circle"/></svg>Compiled 1.2s</span>
+          <span class="badge badge-info"><svg class="od-icon spin" aria-hidden="true"><use href="#i-loader"/></svg>Compiling</span>
+          <span class="badge badge-warning"><svg class="od-icon" aria-hidden="true"><use href="#i-alert-triangle"/></svg>3 warnings</span>
+          <span class="badge badge-danger"><svg class="od-icon" aria-hidden="true"><use href="#i-alert-circle"/></svg>Build failed</span>
+          <span class="badge"><svg class="od-icon" aria-hidden="true"><use href="#i-cloud-check"/></svg>Saved</span>
+          <span class="badge badge-accent">Owner</span>
+          <span class="badge badge-outline">Viewer</span>
+          <span class="tag">ACL 2025</span>
+          <span class="tag">pdflatex</span>
+        </div>
+        <div class="ds-caption">Badges = state. Tags (mono) = metadata like templates and engines.</div>
+      </div>
+
+      <h3 class="ds-sub" id="c-menus">Menus</h3>
+      <div class="ds-card">
+        <div class="ds-demo" style="align-items:flex-start;gap:24px">
+          <div class="menu static-menu" role="menu" aria-label="Project menu example">
+            <span class="menu-label">Project</span>
+            <button class="menu-item" role="menuitem" type="button"><svg class="od-icon" aria-hidden="true"><use href="#i-pencil"/></svg><span class="menu-text">Rename</span></button>
+            <button class="menu-item" role="menuitem" type="button"><svg class="od-icon" aria-hidden="true"><use href="#i-copy"/></svg><span class="menu-text">Duplicate</span></button>
+            <button class="menu-item" role="menuitem" type="button"><svg class="od-icon" aria-hidden="true"><use href="#i-download"/></svg><span class="menu-text">Download source (.zip)</span></button>
+            <button class="menu-item" role="menuitem" type="button"><svg class="od-icon" aria-hidden="true"><use href="#i-settings"/></svg><span class="menu-text">Project settings</span><span class="menu-meta"><kbd>Ctrl ,</kbd></span></button>
+            <hr class="menu-sep">
+            <button class="menu-item is-danger" role="menuitem" type="button"><svg class="od-icon" aria-hidden="true"><use href="#i-trash"/></svg><span class="menu-text">Delete project…</span></button>
+          </div>
+          <div class="menu static-menu" role="menu" aria-label="Theme menu example">
+            <span class="menu-label">Theme</span>
+            <button class="menu-item" role="menuitemradio" aria-checked="false" type="button"><svg class="od-icon" aria-hidden="true"><use href="#i-sun"/></svg><span class="menu-text">Light</span><svg class="od-icon menu-check" aria-hidden="true"><use href="#i-check"/></svg></button>
+            <button class="menu-item" role="menuitemradio" aria-checked="true" type="button"><svg class="od-icon" aria-hidden="true"><use href="#i-moon"/></svg><span class="menu-text">Dark</span><svg class="od-icon menu-check" aria-hidden="true"><use href="#i-check"/></svg></button>
+            <button class="menu-item" role="menuitemradio" aria-checked="false" type="button"><svg class="od-icon" aria-hidden="true"><use href="#i-monitor"/></svg><span class="menu-text">System</span><svg class="od-icon menu-check" aria-hidden="true"><use href="#i-check"/></svg></button>
+            <hr class="menu-sep">
+            <button class="menu-item" role="menuitem" type="button" disabled><svg class="od-icon" aria-hidden="true"><use href="#i-lock"/></svg><span class="menu-text">Custom theme</span><span class="menu-meta">Soon</span></button>
+          </div>
+          <div class="anno">
+            <span><b>Anatomy:</b> optional section label → items (16px icon · label · shortcut or meta) → separator → destructive items last, in danger colour.</span>
+            <span><b>Width:</b> 220–320px. Labels truncate; shortcuts never do.</span>
+            <span><b>Keyboard:</b> ↑ ↓ move, Enter selects, Esc closes and returns focus to the trigger.</span>
+            <span><b>Ellipsis (…)</b> means the item opens a dialog before acting.</span>
+          </div>
+        </div>
+      </div>
+
+      <h3 class="ds-sub" id="c-avatars">Avatars &amp; presence</h3>
+      <div class="ds-card">
+        <div class="ds-demo">
+          <span class="avatar avatar-xl" style="--av:#3b6ea8">DO</span>
+          <span class="avatar avatar-lg" style="--av:#2f7d5b" data-online="true">LP</span>
+          <span class="avatar" style="--av:#8a4fa8">MH</span>
+          <span class="avatar avatar-sm" style="--av:#a8563b">PR</span>
+          <span class="avatar is-square avatar-lg" style="--av:#1f5fa3">NL</span>
+          <span class="avatar-stack" aria-label="4 collaborators online">
+            <span class="avatar" style="--av:#2f7d5b">LP</span><span class="avatar" style="--av:#8a4fa8">MH</span><span class="avatar" style="--av:#a8563b">PR</span><span class="avatar avatar-more">+2</span>
+          </span>
+        </div>
+        <div class="ds-caption">Round = person (green dot = online in this project). Square = workspace. Each collaborator's colour is reused for their cursor in the editor.</div>
+      </div>
+
+      <h3 class="ds-sub" id="c-feedback">Toasts &amp; dialogs</h3>
+      <div class="ds-card">
+        <div class="ds-demo" style="align-items:flex-start">
+          <div class="toast static" role="status">
+            <svg class="od-icon is-success" aria-hidden="true"><use href="#i-check-circle"/></svg>
+            <div class="toast-body"><span class="toast-title">Compiled in 1.2s</span><span class="toast-msg">main.pdf · 9 pages · 3 warnings</span></div>
+          </div>
+          <div class="toast static" role="status">
+            <svg class="od-icon is-danger" aria-hidden="true"><use href="#i-alert-circle"/></svg>
+            <div class="toast-body"><span class="toast-title">Build failed</span><span class="toast-msg">Undefined control sequence in sections/method.tex, line 14.</span></div>
+          </div>
+          <button class="btn btn-secondary" type="button" id="openDemoDialog">Open example dialog</button>
+        </div>
+        <div class="ds-caption">Toasts confirm background results and dismiss themselves after 4s. Dialogs are for decisions — always with a title, a clear primary action and Cancel.</div>
+      </div>
+
+      <h3 class="ds-sub" id="c-panel">Panel anatomy</h3>
+      <div class="ds-card">
+        <div class="ds-demo" style="align-items:flex-start;gap:24px">
+          <div class="demo-panel panel">
+            <div class="panel-header">
+              <span class="panel-title">Files</span>
+              <div class="panel-actions">
+                <button class="btn btn-icon btn-sm btn-ghost" type="button" aria-label="New file" data-tip="New file"><svg class="od-icon" aria-hidden="true"><use href="#i-file-plus"/></svg></button>
+                <button class="btn btn-icon btn-sm btn-ghost" type="button" aria-label="Upload" data-tip="Upload"><svg class="od-icon" aria-hidden="true"><use href="#i-upload"/></svg></button>
+                <button class="btn btn-icon btn-sm btn-ghost" type="button" aria-label="Collapse panel" data-tip="Collapse"><svg class="od-icon" aria-hidden="true"><use href="#i-panel-left"/></svg></button>
+              </div>
+            </div>
+            <ul class="tree">
+              <li><button class="tree-row" type="button" aria-expanded="true"><svg class="od-icon tree-caret" aria-hidden="true"><use href="#i-chevron-down"/></svg><svg class="od-icon ft-dir" aria-hidden="true"><use href="#i-folder"/></svg><span class="tree-name">sections</span></button></li>
+              <li><button class="tree-row" type="button" style="--depth:1" aria-current="true"><span class="tree-spacer"></span><svg class="od-icon ft-tex" aria-hidden="true"><use href="#i-file-text"/></svg><span class="tree-name">method.tex</span></button></li>
+              <li><button class="tree-row" type="button" style="--depth:1"><span class="tree-spacer"></span><svg class="od-icon ft-tex" aria-hidden="true"><use href="#i-file-text"/></svg><span class="tree-name">intro.tex</span><span class="tree-meta avatar avatar-sm" style="--av:#2f7d5b;--size:16px">LP</span></button></li>
+              <li><button class="tree-row" type="button"><span class="tree-spacer"></span><svg class="od-icon ft-bib" aria-hidden="true"><use href="#i-book"/></svg><span class="tree-name">refs.bib</span></button></li>
+              <li><button class="tree-row" type="button"><span class="tree-spacer"></span><svg class="od-icon ft-img" aria-hidden="true"><use href="#i-file-image"/></svg><span class="tree-name">pipeline.pdf</span></button></li>
+            </ul>
+          </div>
+          <div class="anno">
+            <span><b>Header · 40px:</b> uppercase title, then up to 3 icon actions; the last is always Collapse.</span>
+            <span><b>Body:</b> scrolls on its own; header stays put.</span>
+            <span><b>File types:</b> .tex = accent, .bib = info, images = success, folders = neutral.</span>
+            <span><b>Current file:</b> accent-soft fill. Someone else editing a file shows their avatar at the end of the row.</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ LAYOUT ============ -->
+    <section class="ds-sec" id="layout">
+      <h2>Layout</h2>
+      <p class="lead">The editor is a five-column shell: a fixed activity rail on each edge, a collapsible panel inside each rail, and the editor/preview in the middle. The middle always gets the space.</p>
+      <div class="shell-diagram" aria-hidden="true">
+        <div class="sd-top"><b>Top bar · 48</b>Workspace › Project › File · Compile · People · Share · Account</div>
+        <div class="sd-rail">Rail 48</div>
+        <div class="sd-panel"><b>Left panel</b>Files · Outline · Search · History<br>200–480, default 264</div>
+        <div class="sd-main"><b>Editor ⟷ PDF preview</b>Editor / Split / PDF</div>
+        <div class="sd-panel"><b>Right panel</b>Assistant · Review · Log · Comments<br>280–480, default 360</div>
+        <div class="sd-rail">Rail 48</div>
+        <div class="sd-status">Status bar · 28 — cursor, engine, save state, who's online</div>
+      </div>
+
+      <h3 class="ds-sub" id="l-panels">Collapsible panel behaviour</h3>
+      <div class="ds-table-wrap">
+        <table class="ds-table">
+          <thead><tr><th>Interaction</th><th>Behaviour</th></tr></thead>
+          <tbody>
+            <tr><td>Click a rail icon</td><td>Opens that view. Clicking the icon of the open view collapses the panel. The rail never collapses.</td></tr>
+            <tr><td>Collapse button / <kbd>Ctrl B</kbd> / <kbd>Ctrl Alt B</kbd></td><td>Toggles the left / right panel. Collapsing keeps the last view so it reopens where you left it.</td></tr>
+            <tr><td>Drag the panel edge</td><td>Resizes within its min–max range. Double-click resets to the default width. With keyboard focus, ← → move 16px at a time.</td></tr>
+            <tr><td>Persistence</td><td>Open/closed state, active view and width are saved per user, per device.</td></tr>
+            <tr><td>≥ 1280px</td><td>Both panels open inline.</td></tr>
+            <tr><td>768–1279px</td><td>Left inline; the right panel opens as an overlay drawer with a scrim and closes with Esc.</td></tr>
+            <tr><td>&lt; 768px</td><td>Both panels become overlay drawers, rails stay visible, and the editor and PDF switch instead of splitting.</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3 class="ds-sub" id="l-menus">Menu map</h3>
+      <p class="ds-note">Every menu has a single home. When a new action is added, it goes into the menu for the object it acts on.</p>
+      <div class="ds-table-wrap">
+        <table class="ds-table">
+          <thead><tr><th>Menu</th><th>Trigger</th><th>Contents</th></tr></thead>
+          <tbody>
+            <tr><td>Workspace switcher</td><td>Square avatar + name, top-left</td><td>Workspaces with role · Workspace settings · Members · New workspace…</td></tr>
+            <tr><td>Project</td><td>Project name in breadcrumb</td><td>Rename · Duplicate · Download source · Project settings · Delete…</td></tr>
+            <tr><td>Compile</td><td>Chevron on Compile button</td><td>Engine (pdfLaTeX / XeLaTeX / LuaLaTeX / Tectonic) · Compile on save · Download PDF</td></tr>
+            <tr><td>Insert</td><td>Editor toolbar</td><td>Section · Equation · Figure · Table · Citation · List</td></tr>
+            <tr><td>File (context)</td><td>Right-click or ⋯ on a tree row</td><td>Open · Rename · Copy path · Delete…</td></tr>
+            <tr><td>Account</td><td>Your avatar, top-right</td><td>Profile · Theme · Keyboard shortcuts · Sign out</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3 class="ds-sub" id="l-keys">Keyboard shortcuts</h3>
+      <div class="ds-table-wrap">
+        <table class="ds-table">
+          <tbody>
+            <tr><td>Toggle left panel</td><td><kbd>Ctrl B</kbd></td><td>Toggle right panel</td><td><kbd>Ctrl Alt B</kbd></td></tr>
+            <tr><td>Compile</td><td><kbd>Ctrl Enter</kbd></td><td>Focus assistant</td><td><kbd>Ctrl I</kbd></td></tr>
+            <tr><td>Search project</td><td><kbd>Ctrl Shift F</kbd></td><td>Show shortcuts</td><td><kbd>?</kbd></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- ============ ACCOUNTS ============ -->
+    <section class="ds-sec" id="accounts">
+      <h2>Users, workspaces &amp; projects</h2>
+      <p class="lead">This is placeholder structure for the hosted model. Each user belongs to one or more workspaces, and every project lives in exactly one workspace. A project role can grant someone more access than their workspace role, but never less.</p>
+      <div class="model">
+        <div class="model-node"><svg class="od-icon" aria-hidden="true"><use href="#i-user"/></svg><strong>User</strong><span>Name, email, avatar colour, theme and panel preferences. Always has a Personal workspace.</span></div>
+        <div class="model-node"><svg class="od-icon" aria-hidden="true"><use href="#i-building"/></svg><strong>Workspace</strong><span>Personal or Team. Owns members, shared templates, LLM keys and billing. Square avatar.</span></div>
+        <div class="model-node"><svg class="od-icon" aria-hidden="true"><use href="#i-file-text"/></svg><strong>Project</strong><span>One paper: files, template, compile settings, history and comments. Can be shared by link.</span></div>
+      </div>
+      <h3 class="ds-sub">Roles</h3>
+      <div class="ds-table-wrap">
+        <table class="ds-table" id="roleTable">
+          <thead><tr><th>Can…</th><th>Owner</th><th>Admin</th><th>Editor</th><th>Commenter</th><th>Viewer</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- ============ COPY ============ -->
+    <section class="ds-sec" id="copy">
+      <h2>Writing UI copy</h2>
+      <p class="lead">Short, specific, sentence case. Name the object and say what happened or what to do next.</p>
+      <div class="ds-table-wrap">
+        <table class="ds-table">
+          <thead><tr><th>Instead of</th><th>Write</th></tr></thead>
+          <tbody>
+            <tr><td>Error!</td><td>Build failed — undefined control sequence on line 14.</td></tr>
+            <tr><td>Submit</td><td>Create project</td></tr>
+            <tr><td>Are you sure?</td><td>Delete “Lab Handbook”? Its 6 files and history will be removed for everyone.</td></tr>
+            <tr><td>No data</td><td>No projects match “grading”. Clear the search or create a new project.</td></tr>
+            <tr><td>Mixed languages in one view</td><td>One locale per view, through i18n keys — never hard-coded mixed strings.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+</div>
+
+<dialog class="modal" id="demoDialog" aria-labelledby="demoDialogTitle">
+  <div class="modal-header">
+    <div class="od-field od-fill"><span class="modal-title" id="demoDialogTitle">Delete “Lab Handbook”?</span><span class="modal-desc">Its 6 files, compile history and comments will be removed for everyone in iSchool NLP Lab. This can't be undone.</span></div>
+    <button class="btn btn-icon btn-sm btn-ghost" type="button" data-close aria-label="Close"><svg class="od-icon" aria-hidden="true"><use href="#i-x"/></svg></button>
+  </div>
+  <div class="modal-body">
+    <div class="field"><label for="confirmName">Type the project name to confirm</label><input class="input" id="confirmName" autocomplete="off" placeholder="Lab Handbook"></div>
+  </div>
+  <div class="modal-footer">
+    <button class="btn btn-ghost" type="button" data-close>Cancel</button>
+    <button class="btn btn-danger" type="button" id="confirmDelete" disabled>Delete project</button>
+  </div>
+</dialog>
+
+<script>
+(function () {
+  const $ = (s, r = document) => r.querySelector(s);
+  const $$ = (s, r = document) => Array.from(r.querySelectorAll(s));
+  const ic = (n, c) => OPIcons.svg(n, c);
+
+  /* theme */
+  const root = document.documentElement;
+  const themeBtn = $('#themeBtn');
+  function setTheme(t) {
+    root.setAttribute('data-theme', t);
+    themeBtn.innerHTML = ic(t === 'dark' ? 'sun' : 'moon');
+    try { localStorage.setItem('openprism-theme', t); } catch (e) {}
+  }
+  let saved = 'light';
+  try { saved = localStorage.getItem('openprism-theme') || 'light'; } catch (e) {}
+  setTheme(saved);
+  themeBtn.addEventListener('click', () => setTheme(root.getAttribute('data-theme') === 'dark' ? 'light' : 'dark'));
+
+  /* colour swatches — values read live from each themed pane */
+  const groups = {
+    'Surfaces': ['--bg', '--surface', '--surface-2', '--surface-3', '--border', '--border-strong'],
+    'Text': ['--text', '--text-2', '--text-3'],
+    'Accent': ['--accent', '--accent-hover', '--accent-soft', '--accent-soft-fg'],
+    'Status': ['--success', '--warning', '--danger', '--info', '--success-soft', '--danger-soft']
+  };
+  $$('[data-swatches]').forEach(pane => {
+    const cs = getComputedStyle(pane);
+    Object.entries(groups).forEach(([g, tokens]) => {
+      const wrap = document.createElement('div');
+      wrap.className = 'sw-group';
+      wrap.innerHTML = `<span class="section-label">${g}</span><div class="sw-grid">${tokens.map(t => `
+        <div class="sw"><div class="sw-chip" style="background:var(${t})"></div>
+        <div class="sw-meta"><span class="sw-name">${t}</span><span class="sw-val">${cs.getPropertyValue(t).trim()}</span></div></div>`).join('')}</div>`;
+      pane.appendChild(wrap);
+    });
+  });
+
+  /* spacing table */
+  const sp = [['--sp-1', 4], ['--sp-2', 8], ['--sp-3', 12], ['--sp-4', 16], ['--sp-5', 20], ['--sp-6', 24], ['--sp-8', 32], ['--sp-10', 40], ['--sp-12', 48]];
+  $('#spaceTable tbody').innerHTML = sp.map(([t, v]) => `<tr><td><code>${t}</code></td><td class="mono">${v}px</td><td><div class="space-bar" style="width:${v * 4}px;max-width:100%"></div></td></tr>`).join('');
+
+  /* icon library */
+  const lib = $('#iconLib');
+  Object.entries(OPIcons.groups).forEach(([g, names]) => {
+    const t = document.createElement('div');
+    t.className = 'icon-group-title';
+    t.textContent = g;
+    const grid = document.createElement('div');
+    grid.className = 'icon-grid';
+    grid.innerHTML = names.map(n => `<div class="icon-cell" title="${n}">${ic(n)}<code>${n}</code></div>`).join('');
+    lib.append(t, grid);
+  });
+
+  /* roles */
+  const Y = ic('check', 'yes'), N = `<span class="no" aria-label="No">—</span>`;
+  const roles = [
+    ['View &amp; download PDF', 1, 1, 1, 1, 1],
+    ['Comment &amp; resolve threads', 1, 1, 1, 1, 0],
+    ['Edit files, compile, use Assistant', 1, 1, 1, 0, 0],
+    ['Accept Agent patches', 1, 1, 1, 0, 0],
+    ['Invite members, share links', 1, 1, 0, 0, 0],
+    ['Manage LLM keys &amp; templates', 1, 1, 0, 0, 0],
+    ['Delete projects &amp; billing', 1, 0, 0, 0, 0]
+  ];
+  $('#roleTable tbody').innerHTML = roles.map(r => `<tr><td>${r[0]}</td>${r.slice(1).map(v => `<td>${v ? Y : N}</td>`).join('')}</tr>`).join('');
+
+  /* segmented + tabs demos */
+  $$('[data-seg]').forEach(seg => seg.addEventListener('click', e => {
+    const b = e.target.closest('button'); if (!b) return;
+    $$('button', seg).forEach(x => x.setAttribute('aria-pressed', String(x === b)));
+  }));
+  $$('[data-tabs]').forEach(tl => tl.addEventListener('click', e => {
+    const b = e.target.closest('.tab'); if (!b) return;
+    $$('.tab', tl).forEach(x => x.setAttribute('aria-selected', String(x === b)));
+  }));
+  $$('.menu.static-menu [role="menuitemradio"]').forEach(item => item.addEventListener('click', () => {
+    $$('[role="menuitemradio"]', item.parentElement).forEach(x => x.setAttribute('aria-checked', String(x === item)));
+  }));
+
+  /* motion demo */
+  $('#motionBtn').addEventListener('click', () => {
+    $$('.motion-track').forEach(t => {
+      t.style.setProperty('--w', (t.clientWidth - 40) + 'px');
+      t.classList.toggle('go');
+    });
+  });
+
+  /* dialog demo */
+  const dlg = $('#demoDialog'), opener = $('#openDemoDialog'), confirmInput = $('#confirmName'), confirmBtn = $('#confirmDelete');
+  opener.addEventListener('click', () => { confirmInput.value = ''; confirmBtn.disabled = true; dlg.showModal(); confirmInput.focus(); });
+  confirmInput.addEventListener('input', () => { confirmBtn.disabled = confirmInput.value.trim() !== 'Lab Handbook'; });
+  $$('[data-close]', dlg).forEach(b => b.addEventListener('click', () => dlg.close()));
+  confirmBtn.addEventListener('click', () => dlg.close());
+  dlg.addEventListener('close', () => opener.focus());
+
+  /* toc highlight */
+  const links = $$('.ds-toc a');
+  const io = new IntersectionObserver(entries => {
+    entries.forEach(en => {
+      if (en.isIntersecting) {
+        links.forEach(l => l.setAttribute('aria-current', String(l.getAttribute('href') === '#' + en.target.id)));
+      }
+    });
+  }, { rootMargin: '-60px 0px -70% 0px' });
+  $$('.ds-sec, .ds-sub[id]').forEach(s => io.observe(s));
+})();
+</script>
+</body>
+</html>
