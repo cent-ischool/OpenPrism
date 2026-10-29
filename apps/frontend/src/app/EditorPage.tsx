@@ -5,11 +5,13 @@ import { useTranslation } from 'react-i18next';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { basicSetup } from 'codemirror';
-import { latex } from '../latex/lang';
+import { latex, latexCompletionSource as packageCompletionSource } from 'codemirror-lang-latex';
+import { forceLinting, linter } from '@codemirror/lint';
+import { buildProjectIndex, projectCompletionSource, projectReferenceLinter, type ProjectIndex } from '../latex/projectIndex';
 import { Compartment, EditorState, Prec, StateEffect, StateField } from '@codemirror/state';
 import { Decoration, EditorView, DecorationSet, WidgetType, keymap, gutter, GutterMarker } from '@codemirror/view';
 import { search, searchKeymap } from '@codemirror/search';
-import { autocompletion, CompletionContext } from '@codemirror/autocomplete';
+import { autocompletion } from '@codemirror/autocomplete';
 import { toggleComment } from '@codemirror/commands';
 import { foldKeymap, foldService, indentOnInput, HighlightStyle, syntaxHighlighting } from '@codemirror/language';
 import { tags as hlTags } from '@lezer/highlight';
@@ -737,67 +739,6 @@ function appendLog(setter: (val: string[] | ((prev: string[]) => string[])) => v
   setter((prev) => [...prev, line]);
 }
 
-function latexCompletionSource(context: CompletionContext) {
-  const before = context.matchBefore(/[\\/][A-Za-z]*$/);
-  if (!before) return null;
-  const prev = before.from > 0 ? context.state.doc.sliceString(before.from - 1, before.from) : ' ';
-  if (prev && !/[\s({\n]/.test(prev)) return null;
-  if (before.text.startsWith('/') && prev === ':') return null;
-  const options = [
-    { label: '\\section{}', type: 'keyword', apply: (view: any, _completion: any, from: number, to: number) => {
-      view.dispatch({
-        changes: { from, to, insert: '\\section{}' },
-        selection: { anchor: from + '\\section{'.length }
-      });
-    }},
-    { label: '\\subsection{}', type: 'keyword', apply: (view: any, _completion: any, from: number, to: number) => {
-      view.dispatch({
-        changes: { from, to, insert: '\\subsection{}' },
-        selection: { anchor: from + '\\subsection{'.length }
-      });
-    }},
-    { label: '\\subsubsection{}', type: 'keyword', apply: (view: any, _completion: any, from: number, to: number) => {
-      view.dispatch({
-        changes: { from, to, insert: '\\subsubsection{}' },
-        selection: { anchor: from + '\\subsubsection{'.length }
-      });
-    }},
-    { label: '\\paragraph{}', type: 'keyword', apply: (view: any, _completion: any, from: number, to: number) => {
-      view.dispatch({
-        changes: { from, to, insert: '\\paragraph{}' },
-        selection: { anchor: from + '\\paragraph{'.length }
-      });
-    }},
-    { label: '\\cite{}', type: 'keyword', apply: (view: any, _completion: any, from: number, to: number) => {
-      view.dispatch({
-        changes: { from, to, insert: '\\cite{}' },
-        selection: { anchor: from + '\\cite{'.length }
-      });
-    }},
-    { label: '\\ref{}', type: 'keyword', apply: (view: any, _completion: any, from: number, to: number) => {
-      view.dispatch({
-        changes: { from, to, insert: '\\ref{}' },
-        selection: { anchor: from + '\\ref{'.length }
-      });
-    }},
-    { label: '\\label{}', type: 'keyword', apply: (view: any, _completion: any, from: number, to: number) => {
-      view.dispatch({
-        changes: { from, to, insert: '\\label{}' },
-        selection: { anchor: from + '\\label{'.length }
-      });
-    }},
-    { label: '\\begin{itemize}', type: 'keyword', apply: '\\begin{itemize}\n\\item \n\\end{itemize}' },
-    { label: '\\begin{enumerate}', type: 'keyword', apply: '\\begin{enumerate}\n\\item \n\\end{enumerate}' },
-    { label: '\\begin{figure}', type: 'keyword', apply: '\\begin{figure}[t]\n\\centering\n\\includegraphics[width=0.9\\linewidth]{}\n\\caption{}\n\\label{}\n\\end{figure}' },
-    { label: '\\begin{table}', type: 'keyword', apply: '\\begin{table}[t]\n\\centering\n\\begin{tabular}{}\n\\end{tabular}\n\\caption{}\n\\label{}\n\\end{table}' }
-  ];
-  return {
-    from: before.from,
-    options,
-    validFor: /^[\\/][A-Za-z]*$/
-  };
-}
-
 const setGhostEffect = StateEffect.define<{ pos: number | null; text: string }>();
 
 class GhostWidget extends WidgetType {
@@ -939,7 +880,32 @@ const editorTheme = EditorView.theme(
     },
     '.cm-selectionBackground': {
       background: 'var(--sel)'
-    }
+    },
+    // Popups (completion list, lint and hover tooltips) are drawn by CodeMirror with its light defaults; bind them to tokens.
+    '.cm-tooltip': {
+      background: 'var(--surface)',
+      color: 'var(--text)',
+      border: '1px solid var(--border-strong)',
+      borderRadius: 'var(--r-md, 8px)',
+      boxShadow: 'var(--shadow-2)',
+      overflow: 'hidden'
+    },
+    '.cm-tooltip .cm-tooltip-arrow:before, .cm-tooltip .cm-tooltip-arrow:after': { display: 'none' },
+    '.cm-tooltip-autocomplete > ul': { fontFamily: 'var(--font-mono)', maxHeight: '16em' },
+    '.cm-tooltip-autocomplete > ul > li': { padding: '2px 8px', color: 'var(--text)' },
+    '.cm-tooltip-autocomplete > ul > li[aria-selected]': { background: 'var(--sel)', color: 'var(--text)' },
+    '.cm-completionDetail': { color: 'var(--text-3)', fontStyle: 'normal', marginLeft: '0.8em' },
+    '.cm-completionMatchedText': { color: 'var(--accent)', textDecoration: 'none', fontWeight: '600' },
+    '.cm-completionInfo': {
+      background: 'var(--surface)',
+      color: 'var(--text-2)',
+      border: '1px solid var(--border-strong)'
+    },
+    '.cm-tooltip-lint': { padding: '0' },
+    '.cm-diagnostic': { color: 'var(--text)', padding: '6px 10px' },
+    '.cm-diagnostic-warning': { borderLeft: '4px solid var(--warning)' },
+    '.cm-diagnostic-error': { borderLeft: '4px solid var(--danger)' },
+    '.cm-panels': { background: 'var(--surface-2)', color: 'var(--text)', borderColor: 'var(--border)' }
   },
   { dark: false }
 );
@@ -948,7 +914,18 @@ const editorTheme = EditorView.theme(
 const latexHighlight = HighlightStyle.define([
   { tag: hlTags.comment, color: 'var(--code-comment)', fontStyle: 'italic' },
   { tag: hlTags.keyword, color: 'var(--code-cmd)' },
-  { tag: hlTags.number, color: 'var(--code-math)' },
+  { tag: hlTags.definitionKeyword, color: 'var(--code-kw)', fontWeight: '600' },
+  { tag: hlTags.heading, color: 'var(--code-kw)', fontWeight: '700' },
+  { tag: hlTags.className, color: 'var(--code-kw)' },
+  { tag: hlTags.labelName, color: 'var(--code-math)' },
+  { tag: hlTags.quote, color: 'var(--code-math)' },
+  { tag: [hlTags.number, hlTags.variableName], color: 'var(--code-math)' },
+  { tag: [hlTags.processingInstruction, hlTags.operator], color: 'var(--code-cmd)' },
+  { tag: hlTags.string, color: 'var(--text-2)' },
+  { tag: hlTags.meta, color: 'var(--text-2)' },
+  { tag: hlTags.strong, fontWeight: '700' },
+  { tag: hlTags.emphasis, fontStyle: 'italic' },
+  { tag: hlTags.invalid, color: 'var(--danger, var(--code-kw))' },
   { tag: hlTags.bracket, color: 'var(--text-3)' }
 ]);
 
@@ -1516,6 +1493,8 @@ export default function EditorPage() {
   const acceptChunkRef = useRef<() => void>(() => {});
   const clearSuggestionRef = useRef<() => void>(() => {});
   const saveActiveFileRef = useRef<() => void>(() => {});
+  /** Labels, bibliography keys and file paths of the whole project; feeds completion and the \ref/\cite check. */
+  const projectIndexRef = useRef<ProjectIndex | null>(null);
   const gridRef = useRef<HTMLDivElement | null>(null);
   const editorSplitRef = useRef<HTMLDivElement | null>(null);
   const centerRef = useRef<HTMLElement | null>(null);
@@ -1757,6 +1736,24 @@ export default function EditorPage() {
     }
   };
 
+  /** Re-read every text file so \ref/\cite completion and checks see labels and bib keys from the whole project. */
+  useEffect(() => {
+    if (!projectId || isSaving) return;
+    const timer = window.setTimeout(() => {
+      getAllFiles(projectId)
+        .then(({ files: list }) => {
+          const texts: Record<string, string> = {};
+          list.forEach((file) => {
+            if (file.encoding !== 'base64' && isTextPath(file.path)) texts[file.path] = file.content;
+          });
+          projectIndexRef.current = buildProjectIndex(texts, list.map((file) => file.path));
+          cmViewRef.current && forceLinting(cmViewRef.current);
+        })
+        .catch(() => {});
+    }, 400);
+    return () => window.clearTimeout(timer);
+  }, [projectId, tree, isSaving]);
+
   useEffect(() => {
     if (!projectId) return;
     setFiles({});
@@ -1867,7 +1864,11 @@ export default function EditorPage() {
       doc: '',
       extensions: [
         basicSetup,
-        latex(),
+        // Cross-file checks (\ref/\cite against the whole project) are done by projectReferenceLinter below.
+        latex({
+          enableAutocomplete: false,
+          linter: { checkMissingReferences: false, checkDuplicateLabels: false, checkCitesWithoutBibliography: false }
+        }),
         envDepthField,
         scopeGutter,
         indentOnInput(),
@@ -1878,7 +1879,14 @@ export default function EditorPage() {
         collabCompartment.of([]),
         ghostField,
         search(),
-        autocompletion({ override: [latexCompletionSource] }),
+        autocompletion({
+          override: [
+            projectCompletionSource(() => projectIndexRef.current, () => activePathRef.current),
+            packageCompletionSource(true)
+          ],
+          icons: true
+        }),
+        linter((view) => projectReferenceLinter(() => projectIndexRef.current, () => activePathRef.current)(view.state), { delay: 500 }),
         updateListener,
         keymapExtension,
         // Ctrl/Cmd+Enter compiles. CodeMirror's default keymap (inside basicSetup, so ahead of keymapExtension) binds
