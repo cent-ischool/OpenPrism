@@ -74,6 +74,31 @@ cluster. Do a full run on a local `kind` cluster, then fix whatever breaks.
       - Per-workspace endpoint/model settings go through the same SSRF guard as user-supplied URLs.
       - Pairs naturally with usage accounting and limits per workspace (see the rate-limit item under Security and abuse),
         and with an audit trail of who changed the key.
+- [ ] **Version history: a saved version per compile, and a diff to compare versions.** Every compile records what was
+      compiled, so a user can see how the paper changed between two PDFs, open an old version, and restore it. Notes for
+      whoever picks it up:
+      - *What a version is:* a manifest of the project's files at compile time (path, kind, and a content hash or blob
+        reference), plus the engine, main file and the resulting PDF. Today a compile materialises the files into a temp
+        directory and keeps nothing; the PDF is deleted with its job after 24 hours (`jobs.tasks.cleanup_old_jobs`), so
+        versions need their own retention.
+      - *Storage:* text files live in Postgres and binaries in object storage under random keys, so a naive full copy per
+        compile grows fast. Prefer content-addressed blobs (store each distinct file once, versions just point at them),
+        skip a version when nothing changed since the last one, and decide a retention policy (keep the last N, keep
+        pinned/named versions forever, expire the rest) and per-workspace storage accounting.
+      - *Consistency:* the snapshot must match what was compiled, including edits still in a live collaborative room.
+        The compile endpoint reads the database, so flush the room first (`POST .../collab/flush` already waits for every
+        replica) and snapshot from that same read.
+      - *Which compiles:* decide whether failed compiles are saved (useful for "what broke it"), and whether the
+        transfer pipeline's internal compiles create versions (probably not).
+      - *Diff:* per-file text diffs between any two versions (the editor already renders diffs for AI patches, so reuse
+        that component); show added/removed/changed files, and binaries as changed-or-not. Optionally a visual PDF
+        comparison later.
+      - *Restore:* writing an old version back must go through the collaboration layer, because a REST write to an open
+        file is overwritten by the next live save (see the Collaboration section); restoring while others are editing
+        needs a clear rule. Restore should itself create a new version rather than rewrite history.
+      - *Permissions:* any member (and invite guests) can view and diff; restoring or deleting a version needs write
+        access. Allow naming/pinning a version ("submitted to ACL").
+      - Don't confuse this with the Yjs document history, which is not kept and is not a user-facing version log.
 - [ ] **Account management is minimal.** No password reset, email verification, change-password screen, or
       account deletion. Registration is open to anyone who can reach the site (consider invite-only or verification).
 - [ ] **Workspace invitations send no email.** Invited addresses wait until that person registers; the inviter has to
