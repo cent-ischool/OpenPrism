@@ -57,6 +57,23 @@ cluster. Do a full run on a local `kind` cluster, then fix whatever breaks.
       - The API host is fixed, so the SSRF guard that protects user-supplied URLs is not needed, but responses are
         untrusted input (BibTeX is fed to LaTeX/bibtex, which run in the hardened compile worker).
       - Tests can follow the existing pattern: a fake HTTP server standing in for Zotero.
+- [ ] **LLM keys per workspace.** Let a workspace owner or admin configure the LLM provider for the whole workspace
+      (endpoint, model, API key) so members use it without pasting their own key, and so a team's AI spend is billed to
+      the team. Today a key is either typed into each browser (kept in localStorage, sent with every request) or is the
+      single server-wide default. Notes for whoever picks it up:
+      - *Storage is the main decision.* The current rule is that user keys are never persisted (they live in Redis for a
+        job's duration). A workspace key must be stored, so it needs encryption at rest with a key held outside the
+        database (KMS or a sealed secret), masking in the UI and API (show the last four characters, never return the
+        key), and a way to rotate and delete it. The Zotero connector has the same decision; solve them together.
+      - Resolution order for a request: the workspace key (if the project's workspace has one), else the user's own
+        browser key, else the server default. Decide whether a workspace key can be made mandatory (no personal keys).
+      - Who may use it: probably any member who can edit, not commenters or viewers; invite-link guests should not (they
+        cannot use AI features today). Who may set it: owners and admins only.
+      - The worker must receive the key without it entering Postgres rows, logs or Celery results: reuse the per-job
+        Redis secret hand-off (`common/secrets.py`), looked up by the API when it queues the job.
+      - Per-workspace endpoint/model settings go through the same SSRF guard as user-supplied URLs.
+      - Pairs naturally with usage accounting and limits per workspace (see the rate-limit item under Security and abuse),
+        and with an audit trail of who changed the key.
 - [ ] **Account management is minimal.** No password reset, email verification, change-password screen, or
       account deletion. Registration is open to anyone who can reach the site (consider invite-only or verification).
 - [ ] **Workspace invitations send no email.** Invited addresses wait until that person registers; the inviter has to
