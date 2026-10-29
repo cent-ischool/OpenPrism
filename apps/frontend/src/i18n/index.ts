@@ -4,7 +4,7 @@ import zhCN from './locales/zh-CN.json';
 import enUS from './locales/en-US.json';
 
 const STORAGE_KEY = 'openprism-lang';
-const defaultLang = 'zh-CN';
+const defaultLang = 'en-US';
 
 function getInitialLang() {
   if (typeof window === 'undefined') return defaultLang;

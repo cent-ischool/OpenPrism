@@ -1,38 +1,21 @@
 {
-  // Launch configurations for running OpenPrism (works in the devcontainer).
-  // Use the "OpenPrism: Dev (Full Stack)" compound to start backend + frontend together.
+  // Launch configurations for running OpenPrism in the devcontainer.
+  // Start the data services and API first: `docker compose up -d --wait` (see CLAUDE.md).
   "version": "0.2.0",
   "configurations": [
-    {
-      "name": "OpenPrism: Backend",
-      "type": "node",
-      "request": "launch",
-      "cwd": "${workspaceFolder}",
-      "runtimeExecutable": "node",
-      "program": "${workspaceFolder}/apps/backend/src/index.js",
-      "console": "integratedTerminal",
-      "skipFiles": ["<node_internals>/**"]
-    },
     {
       "name": "OpenPrism: Frontend (Vite)",
       "type": "node",
       "request": "launch",
       "cwd": "${workspaceFolder}",
       "runtimeExecutable": "npm",
-      "runtimeArgs": ["run", "dev:frontend"],
+      "runtimeArgs": ["--workspace", "apps/frontend", "run", "dev", "--", "--host", "0.0.0.0"],
       "console": "integratedTerminal",
       "serverReadyAction": {
         "pattern": "Local:\\s+(https?://\\S+)",
         "uriFormat": "%s",
         "action": "openExternally"
       }
-    }
-  ],
-  "compounds": [
-    {
-      "name": "OpenPrism: Dev (Full Stack)",
-      "configurations": ["OpenPrism: Backend", "OpenPrism: Frontend (Vite)"],
-      "stopAll": true
     }
   ]
 }

@@ -1,0 +1,164 @@
+# Local data services for OpenPrism. From the repo root:
+#   docker compose up -d --wait && deploy/garage-init.sh
+# worker-ai handles queues ai/transfer/import (LLM, vision, plot, agent; MinerU + transfer in Phase 5b).
+name: openprism
+
+services:
+  postgres:
+    image: postgres:16-bookworm
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-openprism}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-openprism}
+      POSTGRES_DB: ${POSTGRES_DB:-openprism}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-bookworm
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  garage:
+    image: dxflrs/garage:v1.0.1
+    environment:
+      GARAGE_RPC_SECRET: ${GARAGE_RPC_SECRET:-0000000000000000000000000000000000000000000000000000000000000001}
+      GARAGE_ADMIN_TOKEN: ${GARAGE_ADMIN_TOKEN:-dev-admin-token}
+    ports:
+      - "3900:3900" # S3 API
+      - "3903:3903" # admin API
+    volumes:
+      - ./deploy/garage.toml:/etc/garage.toml:ro
+      - garage-meta:/var/lib/garage/meta
+      - garage-data:/var/lib/garage/data
+    healthcheck:
+      test: ["CMD", "/garage", "status"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  api:
+    build: {context: ./apps/api, target: api}
+    command: >
+      sh -c "python manage.py migrate --noinput &&
+             uvicorn config.asgi:application --host 0.0.0.0 --port 8000 --reload"
+    environment: &api-env
+      DJANGO_DEBUG: "1"
+      DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:-dev-insecure-change-me}
+      DJANGO_ALLOWED_HOSTS: ${DJANGO_ALLOWED_HOSTS:-localhost,127.0.0.1,api}
+      TRUSTED_PROXY_COUNT: "1" # the nginx web container: rate limits must key on the real client, not on it
+      DATABASE_URL: postgres://${POSTGRES_USER:-openprism}:${POSTGRES_PASSWORD:-openprism}@postgres:5432/${POSTGRES_DB:-openprism}
+      REDIS_URL: redis://redis:6379/0
+      S3_ENDPOINT_URL: http://garage:3900
+      S3_PUBLIC_ENDPOINT_URL: ${S3_PUBLIC_ENDPOINT_URL:-http://localhost:3900}
+      S3_REGION: ${S3_REGION:-garage}
+      S3_BUCKET: ${S3_BUCKET:-openprism}
+      S3_ACCESS_KEY_ID: ${S3_ACCESS_KEY_ID:-GK000000000000000000000001}
+      S3_SECRET_ACCESS_KEY: ${S3_SECRET_ACCESS_KEY:-0000000000000000000000000000000000000000000000000000000000000001}
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./apps/api:/app
+      - ./templates:/legacy/templates:ro # for `manage.py import_legacy`
+      - ./data:/legacy/data:ro
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/healthz')"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 15s
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+      garage: {condition: service_healthy}
+
+  # TeX worker (queues compile + transfer): the only image with TeX Live. After editing Python code, `docker compose restart worker-tex`.
+  worker-tex:
+    build: {context: ./apps/api, target: tex}
+    # Also runs the `transfer` queue (template transfer compiles LaTeX), so it makes LLM/MinerU calls like worker-ai.
+    environment:
+      <<: *api-env
+      LLM_ALLOW_PRIVATE_ENDPOINTS: ${LLM_ALLOW_PRIVATE_ENDPOINTS:-0}
+      OPENPRISM_LLM_ENDPOINT: ${OPENPRISM_LLM_ENDPOINT:-}
+      OPENPRISM_LLM_API_KEY: ${OPENPRISM_LLM_API_KEY:-}
+      OPENPRISM_LLM_MODEL: ${OPENPRISM_LLM_MODEL:-}
+      OPENPRISM_MINERU_API_BASE: ${OPENPRISM_MINERU_API_BASE:-https://mineru.net/api/v4}
+      OPENPRISM_MINERU_TOKEN: ${OPENPRISM_MINERU_TOKEN:-}
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+      garage: {condition: service_healthy}
+    volumes:
+      - ./apps/api:/app
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A config inspect ping -d celery@$$HOSTNAME"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 20s
+
+  # AI worker: calls LLM providers and runs LLM-generated plotting code, so it gets no TeX and should get no
+  # extra secrets. After editing Python code, `docker compose restart worker-ai`.
+  worker-ai:
+    build: {context: ./apps/api, target: ai}
+    environment:
+      <<: *api-env
+      LLM_ALLOW_PRIVATE_ENDPOINTS: ${LLM_ALLOW_PRIVATE_ENDPOINTS:-0} # 1 to use a local model (Ollama, vLLM)
+      OPENPRISM_LLM_ENDPOINT: ${OPENPRISM_LLM_ENDPOINT:-}
+      OPENPRISM_LLM_API_KEY: ${OPENPRISM_LLM_API_KEY:-}
+      OPENPRISM_LLM_MODEL: ${OPENPRISM_LLM_MODEL:-}
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+      garage: {condition: service_healthy}
+    volumes:
+      - ./apps/api:/app
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A config inspect ping -d celery@$$HOSTNAME"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 20s
+
+  beat:
+    build: {context: ./apps/api, target: api}
+    command: celery -A config beat -l info --schedule /tmp/celerybeat-schedule
+    environment: *api-env
+    depends_on:
+      api: {condition: service_healthy}
+    volumes:
+      - ./apps/api:/app
+
+  # Production-style entry point: the built frontend plus a proxy to the api (http://localhost:8080).
+  # For development use the Vite dev server instead (`npm run dev`, port 5173), which proxies /api to the api service.
+  web:
+    build: {context: ., dockerfile: apps/frontend/Dockerfile}
+    ports:
+      - "8080:8080"
+    depends_on:
+      api: {condition: service_healthy}
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  postgres-data:
+  redis-data:
+  garage-meta:
+  garage-data:

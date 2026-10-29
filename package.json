@@ -6,18 +6,9 @@
     "packages/*"
   ],
   "scripts": {
-    "dev": "concurrently \"npm --workspace apps/backend run dev\" \"npm --workspace apps/frontend run dev\"",
-    "dev:backend": "npm --workspace apps/backend run dev",
-    "dev:frontend": "npm --workspace apps/frontend run dev",
+    "dev": "npm --workspace apps/frontend run dev",
     "build": "npm --workspace apps/frontend run build",
-    "preview": "npm --workspace apps/frontend run preview",
-    "tunnel": "npm run build && cross-env OPENPRISM_TUNNEL=localtunnel node apps/backend/src/index.js",
-    "tunnel:cf": "npm run build && cross-env OPENPRISM_TUNNEL=cloudflared node apps/backend/src/index.js",
-    "tunnel:ngrok": "npm run build && cross-env OPENPRISM_TUNNEL=ngrok node apps/backend/src/index.js"
-  },
-  "devDependencies": {
-    "concurrently": "^8.2.2",
-    "cross-env": "^7.0.3"
+    "preview": "npm --workspace apps/frontend run preview"
   },
   "dependencies": {
     "pdf-lib": "^1.17.1"

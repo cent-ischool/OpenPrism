@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { CSSProperties, Dispatch, MouseEvent, SetStateAction, RefObject, DragEvent } from 'react';
+import type { CSSProperties, Dispatch, MouseEvent, SetStateAction, RefObject, DragEvent, KeyboardEvent as ReactKeyboardEvent } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import ReactMarkdown from 'react-markdown';
@@ -11,7 +11,8 @@ import { Decoration, EditorView, DecorationSet, WidgetType, keymap, gutter, Gutt
 import { search, searchKeymap } from '@codemirror/search';
 import { autocompletion, CompletionContext } from '@codemirror/autocomplete';
 import { toggleComment } from '@codemirror/commands';
-import { foldKeymap, foldService, indentOnInput } from '@codemirror/language';
+import { foldKeymap, foldService, indentOnInput, HighlightStyle, syntaxHighlighting } from '@codemirror/language';
+import { tags as hlTags } from '@lezer/highlight';
 import { GlobalWorkerOptions, getDocument, renderTextLayer } from 'pdfjs-dist';
 import pdfWorker from 'pdfjs-dist/build/pdf.worker.min?url';
 import 'pdfjs-dist/web/pdf_viewer.css';
@@ -26,6 +27,7 @@ import {
   getFile,
   getProjectTree,
   getCollabToken,
+  blobUrl,
   listProjects,
   renamePath,
   deleteFile,
@@ -40,12 +42,31 @@ import {
   setCollabServer
 } from '../api/client';
 import type { ArxivPaper } from '../api/client';
+import { tokenForUrl } from '../api/auth';
 import { createTwoFilesPatch, diffLines } from 'diff';
 import type { CompileOutcome } from '../latex/engine';
 import * as Y from 'yjs';
 import { Awareness } from 'y-protocols/awareness';
 import { yCollab } from 'y-codemirror.next';
 import { CollabProvider } from '../collab/provider';
+import {
+  AppTopBar,
+  Avatar,
+  Badge,
+  Button,
+  CrumbSep,
+  EmptyState,
+  Icon,
+  IconButton,
+  Menu,
+  MenuButton,
+  Modal,
+  PanelHeader,
+  SegmentedControl,
+  Select
+} from '@design';
+import type { IconName, MenuEntry, SegmentOption } from '@design';
+import './editor-shell.css';
 
 GlobalWorkerOptions.workerSrc = pdfWorker;
 
@@ -107,6 +128,81 @@ const RIGHT_VIEW_OPTIONS = (t: (key: string) => string) => [
   { value: 'review', label: t('评审报告') }
 ];
 
+type LeftView = 'files' | 'outline' | 'search';
+type RightTool = 'agent' | 'vision' | 'search' | 'websearch' | 'plot' | 'review' | 'collab';
+type ViewMode = 'editor' | 'split' | 'pdf';
+
+const EDITOR_LAYOUT_KEY = 'openprism-editor-layout-v1';
+const NARROW_RIGHT_QUERY = '(max-width: 1279px)';
+const NARROW_LEFT_QUERY = '(max-width: 767px)';
+/** [min, max, default] widths in px for the side panels. */
+const PANEL_LIMITS: Record<'left' | 'right', [number, number, number]> = {
+  left: [200, 480, 264],
+  right: [280, 560, 380]
+};
+
+interface EditorLayout {
+  leftOpen: boolean;
+  leftView: LeftView;
+  leftWidth: number;
+  rightOpen: boolean;
+  rightTool: RightTool;
+  rightWidth: number;
+  /** Editor share of the centre area when split (0.2–0.8). */
+  split: number;
+  viewMode: ViewMode;
+}
+
+function loadEditorLayout(): EditorLayout {
+  const fallback: EditorLayout = {
+    leftOpen: true,
+    leftView: 'files',
+    leftWidth: PANEL_LIMITS.left[2],
+    rightOpen: true,
+    rightTool: 'agent',
+    rightWidth: PANEL_LIMITS.right[2],
+    split: 0.5,
+    viewMode: 'split'
+  };
+  let layout = fallback;
+  try {
+    const raw = window.localStorage.getItem(EDITOR_LAYOUT_KEY);
+    if (raw) layout = { ...fallback, ...(JSON.parse(raw) as Partial<EditorLayout>) };
+  } catch {
+    layout = fallback;
+  }
+  if (window.matchMedia(NARROW_RIGHT_QUERY).matches) layout.rightOpen = false;
+  if (window.matchMedia(NARROW_LEFT_QUERY).matches) {
+    layout.leftOpen = false;
+    if (layout.viewMode === 'split') layout.viewMode = 'editor';
+  }
+  return layout;
+}
+
+function saveEditorLayout(layout: EditorLayout) {
+  try {
+    window.localStorage.setItem(EDITOR_LAYOUT_KEY, JSON.stringify(layout));
+  } catch {
+    /* storage unavailable */
+  }
+}
+
+function fileIconName(path: string): IconName {
+  const lower = path.toLowerCase();
+  if (lower.endsWith('.tex') || lower.endsWith('.cls') || lower.endsWith('.sty')) return 'file-text';
+  if (lower.endsWith('.bib')) return 'book';
+  if (/\.(png|jpe?g|gif|svg|pdf|eps|webp)$/.test(lower)) return 'file-image';
+  return 'file';
+}
+
+function fileIconClass(path: string) {
+  const lower = path.toLowerCase();
+  if (lower.endsWith('.tex') || lower.endsWith('.cls') || lower.endsWith('.sty')) return 'ft-tex';
+  if (lower.endsWith('.bib')) return 'ft-bib';
+  if (/\.(png|jpe?g|gif|svg|pdf|eps|webp)$/.test(lower)) return 'ft-img';
+  return 'ft-other';
+}
+
 const SETTINGS_KEY = 'openprism-settings-v1';
 const DEFAULT_SETTINGS: AppSettings = {
   llmEndpoint: 'https://api.openai.com/v1/chat/completions',
@@ -122,7 +218,7 @@ const DEFAULT_SETTINGS: AppSettings = {
 };
 
 const COLLAB_NAME_KEY = 'openprism-collab-name';
-const COLLAB_COLORS = ['#b44a2f', '#2f6fb4', '#2f9b74', '#b48a2f', '#6b2fb4', '#b42f6d', '#2f8fb4'];
+const COLLAB_COLORS = ['#b0442a', '#2f6fb4', '#2f9b74', '#b48a2f', '#6b2fb4', '#b42f6d', '#2f8fb4'];
 
 function loadSettings(): AppSettings {
   if (typeof window === 'undefined') return DEFAULT_SETTINGS;
@@ -820,8 +916,8 @@ const editorTheme = EditorView.theme(
       background: 'transparent'
     },
     '.cm-scroller': {
-      fontFamily: '"JetBrains Mono", "SF Mono", "Menlo", monospace',
-      fontSize: 'var(--editor-font-size, 11px)',
+      fontFamily: 'var(--font-mono)',
+      fontSize: 'var(--editor-font-size, 13px)',
       lineHeight: '1.6'
     },
     '.cm-content': {
@@ -830,23 +926,31 @@ const editorTheme = EditorView.theme(
     '.cm-gutters': {
       background: 'transparent',
       border: 'none',
-      color: 'rgba(122, 111, 103, 0.6)'
+      color: 'var(--text-3)'
     },
     '.cm-lineNumbers .cm-gutterElement': {
       padding: '0 8px 0 12px'
     },
     '.cm-activeLine': {
-      background: 'rgba(180, 74, 47, 0.08)'
+      background: 'color-mix(in srgb, var(--accent) 6%, transparent)'
     },
     '.cm-activeLineGutter': {
       background: 'transparent'
     },
     '.cm-selectionBackground': {
-      background: 'rgba(180, 74, 47, 0.18)'
+      background: 'var(--sel)'
     }
   },
   { dark: false }
 );
+
+/** LaTeX token colours, bound to design tokens so they follow light/dark themes. */
+const latexHighlight = HighlightStyle.define([
+  { tag: hlTags.comment, color: 'var(--code-comment)', fontStyle: 'italic' },
+  { tag: hlTags.keyword, color: 'var(--code-cmd)' },
+  { tag: hlTags.number, color: 'var(--code-math)' },
+  { tag: hlTags.bracket, color: 'var(--text-3)' }
+]);
 
 function buildSplitDiff(original: string, proposed: string) {
   const parts = diffLines(original, proposed);
@@ -1270,9 +1374,19 @@ export default function EditorPage() {
   const [rightView, setRightView] = useState<'pdf' | 'figures' | 'diff' | 'log' | 'toc' | 'review'>('pdf');
   const [selectedFigure, setSelectedFigure] = useState<string>('');
   const [diffFocus, setDiffFocus] = useState<PendingChange | null>(null);
-  const [activeSidebar, setActiveSidebar] = useState<'files' | 'agent' | 'vision' | 'search' | 'websearch' | 'plot' | 'review' | 'collab'>('files');
-  const [sidebarOpen, setSidebarOpen] = useState(true);
-  const [columnSizes, setColumnSizes] = useState({ sidebar: 260, editor: 640, right: 420 });
+  const [initialLayout] = useState(loadEditorLayout);
+  const [leftView, setLeftView] = useState<LeftView>(initialLayout.leftView);
+  const [leftOpen, setLeftOpen] = useState(initialLayout.leftOpen);
+  const [activeSidebar, setActiveSidebar] = useState<RightTool>(initialLayout.rightTool);
+  const [rightOpen, setRightOpen] = useState(initialLayout.rightOpen);
+  /** sidebar/right: panel widths in px. editor: editor share of the centre (ratio). */
+  const [columnSizes, setColumnSizes] = useState({ sidebar: initialLayout.leftWidth, editor: initialLayout.split, right: initialLayout.rightWidth });
+  const [viewMode, setViewMode] = useState<ViewMode>(initialLayout.viewMode);
+  const [narrowLeft, setNarrowLeft] = useState(() => window.matchMedia(NARROW_LEFT_QUERY).matches);
+  const [narrowRight, setNarrowRight] = useState(() => window.matchMedia(NARROW_RIGHT_QUERY).matches);
+  const [projectSearch, setProjectSearch] = useState('');
+  const [searchCorpus, setSearchCorpus] = useState<Record<string, string> | null>(null);
+  const [searchLoading, setSearchLoading] = useState(false);
   const [editorSplit, setEditorSplit] = useState(0.7);
   const [selectedPath, setSelectedPath] = useState('');
   const [openFolders, setOpenFolders] = useState<Record<string, boolean>>({});
@@ -1285,7 +1399,7 @@ export default function EditorPage() {
   const [inlineEdit, setInlineEdit] = useState<InlineEdit | null>(null);
   const [fileContextMenu, setFileContextMenu] = useState<{ x: number; y: number } | null>(null);
   const [outlineCollapsed, setOutlineCollapsed] = useState(false);
-  const [editorFontSize, setEditorFontSize] = useState(11);
+  const [editorFontSize, setEditorFontSize] = useState(13);
   const [visionMode, setVisionMode] = useState<'equation' | 'table' | 'figure' | 'algorithm' | 'ocr'>('equation');
   const [visionFile, setVisionFile] = useState<File | null>(null);
   const [visionPrompt, setVisionPrompt] = useState('');
@@ -1354,6 +1468,7 @@ export default function EditorPage() {
   const saveActiveFileRef = useRef<() => void>(() => {});
   const gridRef = useRef<HTMLDivElement | null>(null);
   const editorSplitRef = useRef<HTMLDivElement | null>(null);
+  const centerRef = useRef<HTMLElement | null>(null);
   const pdfContainerRef = useRef<HTMLDivElement | null>(null);
   const fileTreeRef = useRef<HTMLDivElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -1499,7 +1614,7 @@ export default function EditorPage() {
     });
     const provider = new CollabProvider({
       serverUrl: normalizeServerUrl(collabServer) || (typeof window === 'undefined' ? '' : window.location.origin),
-      token: collabToken || undefined,
+      token: tokenForUrl, // read on every (re)connect, so a refreshed account token is picked up
       projectId,
       filePath: activePath,
       doc: ydoc,
@@ -1705,6 +1820,7 @@ export default function EditorPage() {
         foldService.of(latexFoldService),
         EditorView.lineWrapping,
         editorTheme,
+        syntaxHighlighting(latexHighlight),
         collabCompartment.of([]),
         ghostField,
         search(),
@@ -2720,7 +2836,6 @@ export default function EditorPage() {
         // If deleted file was the active file, clear it
         if (target === activePath) {
           setActivePath('');
-          setContent('');
         }
         // Refresh the file tree
         refreshTree();
@@ -3116,8 +3231,8 @@ export default function EditorPage() {
                 }
               }}
             >
-              <span className="tree-caret">{isOpen ? '▾' : '▸'}</span>
-              <span className="tree-icon folder" />
+              <Icon name="chevron-down" className={`tree-caret ${isOpen ? '' : 'is-closed'}`} />
+              <Icon name="folder" className="tree-icon ft-dir" />
               {inlineEdit?.kind === 'rename' && inlineEdit.path === node.path ? (
                 <input
                   className="inline-input"
@@ -3205,7 +3320,7 @@ export default function EditorPage() {
             moveFileWithOrder(from, targetParent, node.name).catch((err) => setStatus(t('移动失败: {{error}}', { error: String(err) })));
           }}
         >
-          <span className={`tree-icon file ext-${getFileTypeLabel(node.path).toLowerCase()}`}>{getFileTypeLabel(node.path)}</span>
+          <Icon name={fileIconName(node.path)} className={`tree-icon ${fileIconClass(node.path)}`} />
           {inlineEdit?.kind === 'rename' && inlineEdit.path === node.path ? (
             <input
               className="inline-input"
@@ -3227,8 +3342,6 @@ export default function EditorPage() {
           ) : (
             <span className="tree-label">{node.name}</span>
           )}
-          {isFigureFile(node.path) && <span className="tree-tag">FIG</span>}
-          {node.path.endsWith('.bib') && <span className="tree-tag">BIB</span>}
         </button>
       );
     });
@@ -3254,7 +3367,7 @@ export default function EditorPage() {
       if (!fileMap[mainFile]) {
         throw new Error(t('主文件不存在: {{file}}', { file: mainFile }));
       }
-      const res = await compileProject({ projectId, mainFile, engine: compileEngine });
+      const res = await compileProject({ projectId, mainFile, engine: compileEngine }, (message) => setStatus(message));
       if (!res.ok || !res.pdf) {
         const detail = [res.error, res.log].filter(Boolean).join('\n');
         throw new Error(detail || t('后端编译失败'));
@@ -3604,28 +3717,33 @@ export default function EditorPage() {
   };
 
   const startColumnDrag = useCallback(
-    (side: 'left' | 'right', event: MouseEvent) => {
+    (side: 'left' | 'right' | 'split', event: MouseEvent) => {
       event.preventDefault();
       const startX = event.clientX;
       const { sidebar, editor, right } = columnSizes;
-      const minSidebar = 220;
-      const minEditor = 360;
-      const minRight = 320;
+      const handle = event.currentTarget as HTMLElement;
+      handle.classList.add('is-dragging');
+      document.body.classList.add('ed-resizing');
 
-      const onMove = (moveEvent: MouseEvent) => {
+      const onMove = (moveEvent: globalThis.MouseEvent) => {
         const dx = moveEvent.clientX - startX;
         if (side === 'left') {
-          const nextSidebar = Math.max(minSidebar, sidebar + dx);
-          const nextEditor = Math.max(minEditor, editor - dx);
-          setColumnSizes({ sidebar: nextSidebar, editor: nextEditor, right });
+          const [min, max] = PANEL_LIMITS.left;
+          setColumnSizes({ sidebar: Math.min(max, Math.max(min, sidebar + dx)), editor, right });
+        } else if (side === 'right') {
+          const [min, max] = PANEL_LIMITS.right;
+          setColumnSizes({ sidebar, editor, right: Math.min(max, Math.max(min, right - dx)) });
         } else {
-          const nextEditor = Math.max(minEditor, editor + dx);
-          const nextRight = Math.max(minRight, right - dx);
-          setColumnSizes({ sidebar, editor: nextEditor, right: nextRight });
+          const rect = centerRef.current?.getBoundingClientRect();
+          if (!rect || rect.width === 0) return;
+          const ratio = (moveEvent.clientX - rect.left) / rect.width;
+          setColumnSizes({ sidebar, editor: Math.min(0.8, Math.max(0.2, ratio)), right });
         }
       };
 
       const onUp = () => {
+        handle.classList.remove('is-dragging');
+        document.body.classList.remove('ed-resizing');
         window.removeEventListener('mousemove', onMove);
         window.removeEventListener('mouseup', onUp);
       };
@@ -3660,244 +3778,469 @@ export default function EditorPage() {
     []
   );
 
+  /* ===================================================================
+     Shell: collapsible / resizable panels, view mode, shortcuts
+     =================================================================== */
+  const compileRef = useRef(compile);
+  compileRef.current = compile;
+
+  useEffect(() => {
+    saveEditorLayout({
+      leftOpen,
+      leftView,
+      leftWidth: columnSizes.sidebar,
+      rightOpen,
+      rightTool: activeSidebar,
+      rightWidth: columnSizes.right,
+      split: columnSizes.editor,
+      viewMode
+    });
+  }, [leftOpen, leftView, rightOpen, activeSidebar, columnSizes, viewMode]);
+
+  useEffect(() => {
+    const mqRight = window.matchMedia(NARROW_RIGHT_QUERY);
+    const mqLeft = window.matchMedia(NARROW_LEFT_QUERY);
+    const onRight = () => {
+      setNarrowRight(mqRight.matches);
+      if (mqRight.matches) setRightOpen(false);
+    };
+    const onLeft = () => {
+      setNarrowLeft(mqLeft.matches);
+      if (mqLeft.matches) setLeftOpen(false);
+    };
+    mqRight.addEventListener('change', onRight);
+    mqLeft.addEventListener('change', onLeft);
+    return () => {
+      mqRight.removeEventListener('change', onRight);
+      mqLeft.removeEventListener('change', onLeft);
+    };
+  }, []);
+
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      const mod = event.ctrlKey || event.metaKey;
+      if (event.key === 'Escape' && !mod) {
+        if (narrowLeft) setLeftOpen(false);
+        if (narrowRight) setRightOpen(false);
+        return;
+      }
+      if (!mod) return;
+      if (event.code === 'KeyB' && event.altKey) {
+        event.preventDefault();
+        setRightOpen((prev) => !prev);
+      } else if (event.code === 'KeyB') {
+        event.preventDefault();
+        setLeftOpen((prev) => !prev);
+      } else if (event.key === 'Enter') {
+        event.preventDefault();
+        void compileRef.current();
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [narrowLeft, narrowRight]);
+
+  /* project-wide search (left panel) */
+  useEffect(() => {
+    if (!leftOpen || leftView !== 'search' || searchCorpus || !projectId) return;
+    let cancelled = false;
+    setSearchLoading(true);
+    getAllFiles(projectId)
+      .then(({ files: list }) => {
+        if (cancelled) return;
+        const map: Record<string, string> = {};
+        list.forEach((file) => {
+          if (file.encoding !== 'base64' && isTextPath(file.path)) map[file.path] = file.content;
+        });
+        setSearchCorpus(map);
+      })
+      .catch(() => {
+        if (!cancelled) setSearchCorpus({});
+      })
+      .finally(() => {
+        if (!cancelled) setSearchLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [leftOpen, leftView, searchCorpus, projectId]);
+
+  const searchResults = useMemo(() => {
+    const query = projectSearch.trim().toLowerCase();
+    if (!query) return [] as { path: string; hits: { line: number; text: string }[] }[];
+    const corpus: Record<string, string> = { ...(searchCorpus || {}) };
+    Object.entries(files).forEach(([path, content]) => {
+      if (isTextPath(path)) corpus[path] = content;
+    });
+    return Object.keys(corpus)
+      .sort()
+      .map((path) => {
+        const hits: { line: number; text: string }[] = [];
+        corpus[path]!.split('\n').forEach((text, idx) => {
+          if (text.toLowerCase().includes(query)) hits.push({ line: idx + 1, text: text.trim() });
+        });
+        return { path, hits };
+      })
+      .filter((group) => group.hits.length > 0);
+  }, [projectSearch, searchCorpus, files]);
+
+  const goToLine = async (path: string, line: number) => {
+    if (activePath !== path) await openFile(path);
+    const view = cmViewRef.current;
+    if (!view) return;
+    const target = view.state.doc.line(Math.max(1, Math.min(line, view.state.doc.lines)));
+    view.dispatch({ selection: { anchor: target.from, head: target.to }, scrollIntoView: true });
+    view.focus();
+    if (narrowLeft) setLeftOpen(false);
+  };
+
+  const highlightMatch = (text: string, query: string) => {
+    const q = query.trim();
+    if (!q) return text;
+    const idx = text.toLowerCase().indexOf(q.toLowerCase());
+    if (idx < 0) return text;
+    return (
+      <>
+        {text.slice(0, idx)}
+        <mark>{text.slice(idx, idx + q.length)}</mark>
+        {text.slice(idx + q.length)}
+      </>
+    );
+  };
+
+  const toggleLeftView = (view: LeftView) => {
+    if (leftOpen && leftView === view) {
+      setLeftOpen(false);
+    } else {
+      setLeftView(view);
+      setLeftOpen(true);
+    }
+  };
+
+  const toggleRightTool = (tool: RightTool) => {
+    if (rightOpen && activeSidebar === tool) {
+      setRightOpen(false);
+    } else {
+      setActiveSidebar(tool);
+      setRightOpen(true);
+    }
+  };
+
+  const openRightTool = (tool: RightTool) => {
+    setActiveSidebar(tool);
+    setRightOpen(true);
+  };
+
+  const showPreviewView = (view: 'pdf' | 'figures' | 'diff' | 'log' | 'toc' | 'review') => {
+    setRightView(view);
+    if (viewMode === 'editor') setViewMode('split');
+  };
+
+  const nudgeColumn = (side: 'left' | 'right', event: ReactKeyboardEvent<HTMLDivElement>) => {
+    const [min, max, def] = PANEL_LIMITS[side];
+    const key = side === 'left' ? 'sidebar' : 'right';
+    const dir = side === 'left' ? 1 : -1;
+    let next: number | null = null;
+    if (event.key === 'ArrowRight') next = columnSizes[key] + 16 * dir;
+    else if (event.key === 'ArrowLeft') next = columnSizes[key] - 16 * dir;
+    else if (event.key === 'Home') next = min;
+    else if (event.key === 'End') next = max;
+    else if (event.key === 'Enter') next = def;
+    if (next === null) return;
+    event.preventDefault();
+    const value = Math.min(max, Math.max(min, next));
+    setColumnSizes((prev) => ({ ...prev, [key]: value }));
+  };
+
+  const resetColumn = (side: 'left' | 'right' | 'split') => {
+    if (side === 'split') setColumnSizes((prev) => ({ ...prev, editor: 0.5 }));
+    else setColumnSizes((prev) => ({ ...prev, [side === 'left' ? 'sidebar' : 'right']: PANEL_LIMITS[side][2] }));
+  };
+
+  const LEFT_VIEWS: { id: LeftView; label: string; icon: IconName }[] = [
+    { id: 'files', label: t('Files'), icon: 'folder' },
+    { id: 'outline', label: t('Outline'), icon: 'outline' },
+    { id: 'search', label: t('Search project'), icon: 'search' }
+  ];
+
+  const RIGHT_TOOLS: { id: RightTool; label: string; icon: IconName }[] = [
+    { id: 'agent', label: t('Assistant'), icon: 'sparkles' },
+    { id: 'review', label: t('Review'), icon: 'review' },
+    { id: 'search', label: t('论文检索'), icon: 'book-open' },
+    { id: 'websearch', label: t('Websearch'), icon: 'globe' },
+    { id: 'vision', label: t('图像识别'), icon: 'scan' },
+    { id: 'plot', label: t('绘图'), icon: 'bar-chart' },
+    { id: 'collab', label: t('协作'), icon: 'users' }
+  ];
+
+  const ENGINE_LABELS: Record<CompileEngine, string> = {
+    pdflatex: 'pdfLaTeX',
+    xelatex: 'XeLaTeX',
+    lualatex: 'LuaLaTeX',
+    latexmk: 'Latexmk',
+    tectonic: 'Tectonic'
+  };
+
+  const projectMenuItems = (): MenuEntry[] => [
+    { label: t('All projects'), icon: 'layout-grid', onSelect: () => navigate('/projects') },
+    { type: 'sep' },
+    { type: 'label', label: t('Main file') },
+    ...(texFiles.length > 0 ? texFiles : ['main.tex']).map<MenuEntry>((path) => ({
+      label: path,
+      checked: mainFile === path,
+      onSelect: () => setMainFile(path)
+    })),
+    { type: 'sep' },
+    { label: t('保存'), icon: 'save', kbd: 'Ctrl S', onSelect: () => void saveActiveFile() },
+    { label: t('下载 PDF'), icon: 'download', disabled: !pdfUrl, onSelect: () => downloadPdf() },
+    { label: t('Share…'), icon: 'share', onSelect: () => openRightTool('collab') },
+    { label: t('AI & search settings'), icon: 'settings', onSelect: () => setSettingsOpen(true) }
+  ];
+
+  const compileMenuItems = (): MenuEntry[] => [
+    { type: 'label', label: t('Engine') },
+    ...(Object.keys(ENGINE_LABELS) as CompileEngine[]).map<MenuEntry>((engine) => ({
+      label: ENGINE_LABELS[engine],
+      checked: compileEngine === engine,
+      onSelect: () => setSettings((prev) => ({ ...prev, compileEngine: engine }))
+    })),
+    { type: 'sep' },
+    { label: t('Compile now'), icon: 'play', kbd: 'Ctrl Enter', disabled: isCompiling, onSelect: () => void compile() },
+    { label: t('Compile Log'), icon: 'terminal', onSelect: () => showPreviewView('log') },
+    { label: t('下载 PDF'), icon: 'download', disabled: !pdfUrl, onSelect: () => downloadPdf() }
+  ];
+
+  const compileState: 'running' | 'error' | 'ok' | 'idle' = isCompiling ? 'running' : compileErrors.length > 0 ? 'error' : pdfUrl ? 'ok' : 'idle';
+  const compileBadge = {
+    running: { tone: 'op-badge-info', icon: 'loader' as IconName, text: t('编译中...') },
+    error: { tone: 'op-badge-danger', icon: 'alert-circle' as IconName, text: t('{{count}} errors', { count: compileErrors.length }) },
+    ok: { tone: 'op-badge-success', icon: 'check-circle' as IconName, text: t('Compiled') },
+    idle: { tone: '', icon: 'info' as IconName, text: t('Not compiled') }
+  }[compileState];
+
+  const previewOptions: SegmentOption<'pdf' | 'figures' | 'diff' | 'log' | 'toc' | 'review'>[] = [
+    { value: 'pdf', label: 'PDF', icon: 'file-text' },
+    { value: 'toc', label: t('目录'), icon: 'outline' },
+    { value: 'figures', label: t('Figures'), icon: 'image' },
+    { value: 'diff', label: pendingGrouped.length > 0 ? `${t('Diff')} · ${pendingGrouped.length}` : t('Diff'), icon: 'diff' },
+    { value: 'log', label: t('Log'), icon: 'terminal' },
+    { value: 'review', label: t('评审报告'), icon: 'review' }
+  ];
+
+  const insertMenuItems = (): MenuEntry[] => [
+    { type: 'label', label: t('Structure') },
+    { label: t('Section'), icon: 'heading', onSelect: insertSectionSnippet },
+    { label: t('Subsection'), icon: 'heading', onSelect: insertSubsectionSnippet },
+    { label: t('Subsubsection'), icon: 'heading', onSelect: insertSubsubsectionSnippet },
+    { type: 'sep' },
+    { label: t('Itemize'), icon: 'list', onSelect: insertItemizeSnippet },
+    { label: t('Enumerate'), icon: 'list-ordered', onSelect: insertEnumerateSnippet },
+    { label: t('Equation'), icon: 'sigma', onSelect: insertEquationSnippet },
+    { label: t('Algorithm'), icon: 'code', onSelect: insertAlgorithmSnippet },
+    { type: 'sep' },
+    { label: t('Figure'), icon: 'image', onSelect: insertFigureTemplate },
+    { label: t('Table'), icon: 'table', onSelect: insertTableSnippet },
+    { label: t('Listing'), icon: 'terminal', onSelect: insertListingSnippet }
+  ];
+
+  const overlayOpen = (narrowLeft && leftOpen) || (narrowRight && rightOpen);
+
   return (
-    <div className="app-shell">
-      <header className="top-bar">
-        <div className="brand">
-          <div className="brand-title">OpenPrism</div>
-          <div className="brand-sub">{projectName || t('Editor Workspace')}</div>
-        </div>
-        <div className="toolbar">
-          <Link to="/projects" className="btn ghost">{t('Projects')}</Link>
-          <button className="btn ghost" onClick={() => setSidebarOpen((prev) => !prev)}>
-            {sidebarOpen ? t('隐藏侧栏') : t('显示侧栏')}
-          </button>
-          <div className="ios-select-wrapper">
-            <button className="ios-select-trigger" onClick={(e) => {
-              const opening = !mainFileDropdownOpen;
-              setMainFileDropdownOpen(opening); setEngineDropdownOpen(false); setLangDropdownOpen(false);
-              if (opening) { const r = e.currentTarget.getBoundingClientRect(); setTopBarDropdownRect({ top: r.bottom + 6, left: r.left, width: r.width }); }
-            }}>
-              <span>{mainFile}</span>
-              <svg width="12" height="12" viewBox="0 0 12 12" fill="none" className={mainFileDropdownOpen ? 'rotate' : ''}><path d="M3 5L6 8L9 5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
-            </button>
-          </div>
-          <div className="ios-select-wrapper">
-            <button className="ios-select-trigger" onClick={(e) => {
-              const opening = !engineDropdownOpen;
-              setEngineDropdownOpen(opening); setMainFileDropdownOpen(false); setLangDropdownOpen(false);
-              if (opening) { const r = e.currentTarget.getBoundingClientRect(); setTopBarDropdownRect({ top: r.bottom + 6, left: r.left, width: r.width }); }
-            }}>
-              <span>{({'pdflatex':'pdfLaTeX','xelatex':'XeLaTeX','lualatex':'LuaLaTeX','latexmk':'Latexmk','tectonic':'Tectonic'} as Record<string,string>)[compileEngine] || compileEngine}</span>
-              <svg width="12" height="12" viewBox="0 0 12 12" fill="none" className={engineDropdownOpen ? 'rotate' : ''}><path d="M3 5L6 8L9 5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
-            </button>
-          </div>
-          <button onClick={saveActiveFile} className="btn ghost">{t('保存')}</button>
-          <button onClick={compile} className="btn" disabled={isCompiling}>
-            {isCompiling ? t('编译中...') : t('编译 PDF')}
-          </button>
-          <button className="btn ghost" onClick={() => setSettingsOpen(true)}>{t('设置')}</button>
-          <div className="ios-select-wrapper">
-            <button className="ios-select-trigger" onClick={(e) => {
-              const opening = !langDropdownOpen;
-              setLangDropdownOpen(opening); setMainFileDropdownOpen(false); setEngineDropdownOpen(false);
-              if (opening) { const r = e.currentTarget.getBoundingClientRect(); setTopBarDropdownRect({ top: r.bottom + 6, left: r.left, width: r.width }); }
-            }}>
-              <span>{i18n.language === 'zh-CN' ? t('中文') : t('English')}</span>
-              <svg width="12" height="12" viewBox="0 0 12 12" fill="none" className={langDropdownOpen ? 'rotate' : ''}><path d="M3 5L6 8L9 5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
-            </button>
-          </div>
-        </div>
-      </header>
-
-      <div className="status-bar">
-        <div className="status-left">
-          <div>{status}</div>
-          <div className={`save-indicator ${isSaving ? 'saving' : isDirty ? 'dirty' : 'saved'} ${savePulse ? 'pulse' : ''}`}>
-            <span className="dot" />
-            <span>{isSaving ? t('保存中...') : isDirty ? t('未保存') : t('已保存')}</span>
-          </div>
-        </div>
-        <div className="status-right">
-          {t('Compile')}: {compileEngine} · {t('Engine')}: {engineName || t('未初始化')}
-        </div>
-      </div>
-
-      <main
-        className="workspace"
-        ref={gridRef}
-        style={{
-          '--col-sidebar': sidebarOpen ? `${columnSizes.sidebar}px` : '0px',
-          '--col-sidebar-gap': sidebarOpen ? '10px' : '0px',
-          '--col-editor': `${columnSizes.editor}px`,
-          '--col-right': `${columnSizes.right}px`
-        } as CSSProperties}
-      >
-        {sidebarOpen && (
-          <aside className="panel side-panel">
-            <div className="sidebar-tabs">
-              <div className="tab-group">
-                <button
-                  className={`tab-btn ${activeSidebar === 'files' ? 'active' : ''}`}
-                  onClick={() => setActiveSidebar('files')}
-                  title={t('Files')}
-                >
-                  <span className="tab-icon"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg></span>
-                  <span className="tab-text">{t('Files')}</span>
-                </button>
-                <button
-                  className={`tab-btn ${activeSidebar === 'collab' ? 'active' : ''}`}
-                  onClick={() => setActiveSidebar('collab')}
-                  title={t('协作')}
-                >
-                  <span className="tab-icon"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M17 21v-2a4 4 0 0 0-3-3.87"/><path d="M7 21v-2a4 4 0 0 1 3-3.87"/><circle cx="7" cy="7" r="3"/><circle cx="17" cy="7" r="3"/></svg></span>
-                  <span className="tab-text">{t('协作')}</span>
-                </button>
-                <button
-                  className={`tab-btn ${activeSidebar === 'agent' ? 'active' : ''}`}
-                  onClick={() => setActiveSidebar('agent')}
-                  title={t('Agent')}
-                >
-                  <span className="tab-icon"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="4" y="4" width="16" height="16" rx="2"/><line x1="9" y1="9" x2="9.01" y2="9"/><line x1="15" y1="9" x2="15.01" y2="9"/><path d="M8 14s1.5 2 4 2 4-2 4-2"/></svg></span>
-                  <span className="tab-text">{t('Agent')}</span>
-                </button>
-                <button
-                  className={`tab-btn ${activeSidebar === 'vision' ? 'active' : ''}`}
-                  onClick={() => setActiveSidebar('vision')}
-                  title={t('图像识别')}
-                >
-                  <span className="tab-icon"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/></svg></span>
-                  <span className="tab-text">{t('图像识别')}</span>
-                </button>
-                <button
-                  className={`tab-btn ${activeSidebar === 'search' ? 'active' : ''}`}
-                  onClick={() => setActiveSidebar('search')}
-                  title={t('论文检索')}
-                >
-                  <span className="tab-icon"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg></span>
-                  <span className="tab-text">{t('论文检索')}</span>
-                </button>
-                <button
-                  className={`tab-btn ${activeSidebar === 'websearch' ? 'active' : ''}`}
-                  onClick={() => setActiveSidebar('websearch')}
-                  title={t('Websearch')}
-                >
-                  <span className="tab-icon"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg></span>
-                  <span className="tab-text">{t('Websearch')}</span>
-                </button>
-                <button
-                  className={`tab-btn ${activeSidebar === 'plot' ? 'active' : ''}`}
-                  onClick={() => setActiveSidebar('plot')}
-                  title={t('绘图')}
-                >
-                  <span className="tab-icon"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg></span>
-                  <span className="tab-text">{t('绘图')}</span>
-                </button>
-                <button
-                  className={`tab-btn ${activeSidebar === 'review' ? 'active' : ''}`}
-                  onClick={() => setActiveSidebar('review')}
-                  title={t('Review')}
-                >
-                  <span className="tab-icon"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg></span>
-                  <span className="tab-text">{t('Review')}</span>
-                </button>
-              </div>
-              <button className="icon-btn" onClick={() => setSidebarOpen(false)}>✕</button>
-            </div>
-            {activeSidebar === 'files' ? (
+    <div className="app-shell ed-app">
+      <input
+        ref={fileInputRef}
+        type="file"
+        multiple
+        style={{ display: 'none' }}
+        onChange={(event) => {
+          handleUpload(event.target.files).catch((err) => setStatus(t('上传失败: {{error}}', { error: String(err) })));
+          if (event.target) {
+            event.target.value = '';
+          }
+        }}
+      />
+      <input
+        ref={folderInputRef}
+        type="file"
+        multiple
+        style={{ display: 'none' }}
+        {...({ webkitdirectory: 'true', directory: 'true' } as Record<string, string>)}
+        onChange={(event) => {
+          handleUpload(event.target.files).catch((err) => setStatus(t('上传失败: {{error}}', { error: String(err) })));
+          if (event.target) {
+            event.target.value = '';
+          }
+        }}
+      />
+      <AppTopBar
+        crumbs={
+          <>
+            <CrumbSep />
+            <MenuButton className="op-crumb" items={projectMenuItems} menuLabel={t('Project')} minWidth={260}>
+              <span className="op-truncate">{projectName || t('Project')}</span>
+              <Icon name="chevron-down" />
+            </MenuButton>
+            {activePath && (
               <>
-                <div className="panel-header">
-                  <div>{t('Project Files')}</div>
-                </div>
-                <input
-                  ref={fileInputRef}
-                  type="file"
-                  multiple
-                  style={{ display: 'none' }}
-                  onChange={(event) => {
-                    handleUpload(event.target.files).catch((err) => setStatus(t('上传失败: {{error}}', { error: String(err) })));
-                    if (event.target) {
-                      event.target.value = '';
-                    }
-                  }}
+                <CrumbSep className="op-hide-md" />
+                <span className="op-crumb-file op-hide-md" title={activePath}>{activePath}</span>
+              </>
+            )}
+          </>
+        }
+        actions={
+          <>
+            <button
+              type="button"
+              className={`op-badge ${compileBadge.tone}`}
+              onClick={() => showPreviewView('log')}
+              aria-label={`${compileBadge.text} — ${t('Compile Log')}`}
+              data-tip={t('Compile Log')}
+            >
+              <Icon name={compileBadge.icon} className={compileState === 'running' ? 'op-spin' : ''} />
+              <span className="op-hide-sm">{compileBadge.text}</span>
+            </button>
+            {collabPeers.length > 0 && (
+              <span className="op-avatar-stack op-hide-sm" aria-label={t('{{count}} collaborators online', { count: collabPeers.length })}>
+                {collabPeers.slice(0, 3).map((peer) => (
+                  <Avatar key={peer.id} name={peer.name} color={peer.color} online />
+                ))}
+              </span>
+            )}
+            <Button size="sm" icon="share" onClick={() => openRightTool('collab')} aria-label={t('Share')}>
+              <span className="op-hide-sm">{t('Share')}</span>
+            </Button>
+            <div className="op-btn-group">
+              <Button variant="primary" size="sm" icon="play" loading={isCompiling} onClick={() => void compile()} data-tip={t('Compile · Ctrl Enter')}>
+                <span className="op-hide-sm">{t('编译 PDF')}</span>
+              </Button>
+              <MenuButton
+                className="op-btn op-btn-primary op-btn-sm"
+                items={compileMenuItems}
+                align="end"
+                menuLabel={t('Compile options')}
+                aria-label={t('Compile options')}
+                minWidth={220}
+              >
+                <Icon name="chevron-down" />
+              </MenuButton>
+            </div>
+          </>
+        }
+      />
+
+      <main className={`ed-shell ${narrowLeft ? 'ov-left' : ''} ${narrowRight ? 'ov-right' : ''}`}>
+        <nav className="op-rail op-rail-left" aria-label={t('Left panel views')}>
+          {LEFT_VIEWS.map((view) => (
+            <button
+              key={view.id}
+              type="button"
+              className="op-rail-btn"
+              aria-pressed={leftOpen && leftView === view.id}
+              aria-label={view.label}
+              data-tip={view.label}
+              data-tip-pos="right"
+              onClick={() => toggleLeftView(view.id)}
+            >
+              <Icon name={view.icon} />
+            </button>
+          ))}
+          <div className="op-rail-spacer" />
+          <button
+            type="button"
+            className="op-rail-btn"
+            aria-label={t('Toggle left panel (Ctrl B)')}
+            data-tip={t('Toggle panel · Ctrl B')}
+            data-tip-pos="right"
+            onClick={() => setLeftOpen((prev) => !prev)}
+          >
+            <Icon name="panel-left" />
+          </button>
+        </nav>
+
+        {leftOpen && (
+          <aside
+            className="ed-side ed-side-left"
+            style={{ '--w': `${columnSizes.sidebar}px` } as CSSProperties}
+            aria-label={t('Left panel')}
+          >
+            {leftView === 'files' ? (
+              <>
+                <PanelHeader
+                  title={t('Files')}
+                  onCollapse={() => setLeftOpen(false)}
+                  collapseLabel={t('Collapse panel')}
+                  actions={
+                    <>
+                      <IconButton icon="file-plus" label={t('新建文件')} onClick={() => beginInlineCreate('new-file')} />
+                      <IconButton icon="folder-plus" label={t('新建文件夹')} onClick={() => beginInlineCreate('new-folder')} />
+                      <IconButton icon="upload" label={t('上传文件')} onClick={() => fileInputRef.current?.click()} />
+                      <IconButton icon="refresh" label={t('刷新')} onClick={() => void refreshTree()} />
+                    </>
+                  }
                 />
-                <input
-                  ref={folderInputRef}
-                  type="file"
-                  multiple
-                  style={{ display: 'none' }}
-                  {...({ webkitdirectory: 'true', directory: 'true' } as Record<string, string>)}
-                  onChange={(event) => {
-                    handleUpload(event.target.files).catch((err) => setStatus(t('上传失败: {{error}}', { error: String(err) })));
-                    if (event.target) {
-                      event.target.value = '';
-                    }
-                  }}
-                />
-                <div className="panel-search">
-                  <input
-                    className="input"
-                    value={fileFilter}
-                    onChange={(e) => setFileFilter(e.target.value)}
-                    placeholder={t('搜索文件...')}
-                  />
-                </div>
-                <div className="drag-hint muted">{t('拖拽文件：同级排序 / 跨文件夹移动')}</div>
-                <div
-                  className="file-tree-body"
-                  ref={fileTreeRef}
-                  onContextMenu={(event) => {
-                    event.preventDefault();
-                    const menuH = 380;
-                    const menuW = 180;
-                    const y = event.clientY + menuH > window.innerHeight ? Math.max(8, window.innerHeight - menuH - 8) : event.clientY;
-                    const x = event.clientX + menuW > window.innerWidth ? Math.max(8, window.innerWidth - menuW - 8) : event.clientX;
-                    setFileContextMenu({ x, y });
-                  }}
-                  onDragOver={(event) => {
-                    event.preventDefault();
-                    setDragOverPath('');
-                    setDragOverKind('');
-                    if (draggingPath) {
-                      updateDragHint(t('移动到 根目录'), event);
-                    }
-                  }}
-                  onDrop={(event) => {
-                    event.preventDefault();
-                    if (event.dataTransfer.files && event.dataTransfer.files.length > 0) {
-                      handleUpload(event.dataTransfer.files).catch((err) => setStatus(t('上传失败: {{error}}', { error: String(err) })));
-                      return;
-                    }
-                    const from = event.dataTransfer.getData('text/plain');
-                    if (from) {
-                      if (fileFilter.trim()) {
-                        setStatus(t('搜索过滤中无法拖拽移动。'));
+                <div className="ed-panel-body ed-files">
+                  <div className="panel-search">
+                    <input
+                      className="op-input"
+                      value={fileFilter}
+                      onChange={(e) => setFileFilter(e.target.value)}
+                      placeholder={t('搜索文件...')}
+                    />
+                  </div>
+                  <div className="drag-hint muted">{t('拖拽文件：同级排序 / 跨文件夹移动')}</div>
+                  <div
+                    className="file-tree-body"
+                    ref={fileTreeRef}
+                    onContextMenu={(event) => {
+                      event.preventDefault();
+                      const menuH = 380;
+                      const menuW = 180;
+                      const y = event.clientY + menuH > window.innerHeight ? Math.max(8, window.innerHeight - menuH - 8) : event.clientY;
+                      const x = event.clientX + menuW > window.innerWidth ? Math.max(8, window.innerWidth - menuW - 8) : event.clientX;
+                      setFileContextMenu({ x, y });
+                    }}
+                    onDragOver={(event) => {
+                      event.preventDefault();
+                      setDragOverPath('');
+                      setDragOverKind('');
+                      if (draggingPath) {
+                        updateDragHint(t('移动到 根目录'), event);
+                      }
+                    }}
+                    onDrop={(event) => {
+                      event.preventDefault();
+                      if (event.dataTransfer.files && event.dataTransfer.files.length > 0) {
+                        handleUpload(event.dataTransfer.files).catch((err) => setStatus(t('上传失败: {{error}}', { error: String(err) })));
                         return;
                       }
-                      moveFileWithOrder(from, '').catch((err) => setStatus(t('移动失败: {{error}}', { error: String(err) })));
-                    }
-                    setDragHint(null);
-                  }}
-                >
-                  {dragHint && draggingPath && (
-                    <div className="drag-hint-overlay" style={{ left: dragHint.x, top: dragHint.y }}>
-                      {dragHint.text}
-                    </div>
-                  )}
-                  {inlineEdit && inlineEdit.kind !== 'rename' && inlineEdit.parent === '' && inlineInputRow(0)}
-                  {renderTree(treeRoot.children)}
-                </div>
-                <div className="outline-panel">
-                  <div className="outline-header" onClick={() => setOutlineCollapsed(!outlineCollapsed)} style={{ cursor: 'pointer' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-                      <svg width="10" height="10" viewBox="0 0 10 10" fill="none" style={{ transform: outlineCollapsed ? 'rotate(-90deg)' : 'rotate(0)', transition: 'transform 0.2s ease' }}>
-                        <path d="M2 3L5 6L8 3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
-                      </svg>
-                      {t('Outline')}
-                    </div>
-                    <div className="muted">{mainFile || 'main.tex'}</div>
+                      const from = event.dataTransfer.getData('text/plain');
+                      if (from) {
+                        if (fileFilter.trim()) {
+                          setStatus(t('搜索过滤中无法拖拽移动。'));
+                          return;
+                        }
+                        moveFileWithOrder(from, '').catch((err) => setStatus(t('移动失败: {{error}}', { error: String(err) })));
+                      }
+                      setDragHint(null);
+                    }}
+                  >
+                    {dragHint && draggingPath && (
+                      <div className="drag-hint-overlay" style={{ left: dragHint.x, top: dragHint.y }}>
+                        {dragHint.text}
+                      </div>
+                    )}
+                    {inlineEdit && inlineEdit.kind !== 'rename' && inlineEdit.parent === '' && inlineInputRow(0)}
+                    {renderTree(treeRoot.children)}
                   </div>
-                  {!outlineCollapsed && (mainFile && mainFile.toLowerCase().endsWith('.tex') ? (
+                </div>
+              </>
+            ) : leftView === 'outline' ? (
+              <>
+                <PanelHeader title={t('Outline')} onCollapse={() => setLeftOpen(false)} collapseLabel={t('Collapse panel')} />
+                <div className="ed-panel-body">
+                  {mainFile && <div className="ed-panel-note">{mainFile}</div>}
+                  {mainFile && mainFile.toLowerCase().endsWith('.tex') ? (
                     outlineItems.length > 0 ? (
                       <div className="outline-list">
                         {outlineItems.map((item, idx) => (
@@ -3924,1636 +4267,1513 @@ export default function EditorPage() {
                         ))}
                       </div>
                     ) : (
-                      <div className="muted outline-empty">{t('未发现 Section 标题。')}</div>
+                      <EmptyState icon="outline" title={t('未发现 Section 标题。')} />
                     )
                   ) : (
-                    <div className="muted outline-empty">{t('打开 .tex 文件以显示 Outline。')}</div>
-                  ))}
+                    <EmptyState icon="outline" title={t('打开 .tex 文件以显示 Outline。')} />
+                  )}
                 </div>
               </>
-            ) : activeSidebar === 'collab' ? (
+            ) : (
               <>
-                <div className="panel-header">
-                  <div>{t('协作')}</div>
-                  <div className="panel-actions">
-                    <div className="collab-status">
-                      <span>{collabStatus === 'connected' ? t('已连接') : collabStatus === 'connecting' ? t('连接中...') : t('未连接')}</span>
-                    </div>
+                <PanelHeader title={t('Search project')} onCollapse={() => setLeftOpen(false)} collapseLabel={t('Collapse panel')} />
+                <div className="ed-search-box">
+                  <div className="ed-input-group">
+                    <Icon name="search" />
+                    <input
+                      className="op-input"
+                      type="search"
+                      autoFocus
+                      value={projectSearch}
+                      onChange={(event) => setProjectSearch(event.target.value)}
+                      placeholder={t('Search all files')}
+                      aria-label={t('Search all files')}
+                    />
                   </div>
                 </div>
-                <div className="collab-panel">
-                  <div className="collab-row">
-                    <input
-                      className="input"
-                      value={collabServer}
-                      onChange={(e) => setCollabServerState(e.target.value)}
-                      placeholder={t('协作服务器地址')}
-                    />
-                  </div>
-                  <div className="collab-row">
-                    <input
-                      className="input"
-                      value={collabName}
-                      onChange={(e) => setCollabName(e.target.value)}
-                      placeholder={t('显示名称')}
-                    />
-                    <button
-                      className="ios-btn secondary"
-                      onClick={() => setCollabEnabled((prev) => !prev)}
-                      disabled={!activePath || !isTextPath(activePath)}
-                    >
-                      {collabEnabled ? t('断开') : t('连接')}
-                    </button>
-                  </div>
-                  <div className="collab-row">
-                    <button
-                      className="ios-btn primary"
-                      onClick={() => handleCreateInvite()}
-                      disabled={collabInviteBusy || !projectId}
-                    >
-                      {collabInviteBusy ? t('生成中...') : t('生成邀请链接')}
-                    </button>
-                    <button
-                      className="ios-btn secondary"
-                      onClick={() => copyInviteLink()}
-                      disabled={!collabInviteLink}
-                    >
-                      {t('复制')}
-                    </button>
-                  </div>
-                  <div className="collab-row">
-                    <input
-                      className="input"
-                      readOnly
-                      value={collabInviteLink || ''}
-                      placeholder={t('尚未生成邀请链接')}
-                    />
-                  </div>
-                  <div className="collab-row">
-                    <div className="muted">
-                      {activePath ? t('当前文件: {{path}}', { path: activePath }) : t('未选择文件')}
-                    </div>
-                  </div>
-                  <div className="collab-users">
-                    {collabPeers.length === 0 ? (
-                      <div className="muted">{t('暂无协作者在线')}</div>
-                    ) : (
-                      collabPeers.map((peer) => (
-                        <div key={peer.id} className="collab-user">
-                          <span className="dot" style={{ background: peer.color }} />
-                          <span>{peer.name}</span>
+                <div className="ed-panel-body">
+                  {!projectSearch.trim() ? (
+                    <EmptyState icon="search" title={t('Search this project')}>{t('Find text in every .tex and .bib file.')}</EmptyState>
+                  ) : searchLoading && !searchCorpus ? (
+                    <div className="ed-panel-note">{t('Loading files…')}</div>
+                  ) : searchResults.length === 0 ? (
+                    <EmptyState icon="search" title={t('No matches for “{{query}}”', { query: projectSearch.trim() })}>{t('Check the spelling or try a shorter phrase.')}</EmptyState>
+                  ) : (
+                    <div className="ed-search-results">
+                      <div className="ed-panel-note">
+                        {t('{{count}} results in {{files}} files', {
+                          count: searchResults.reduce((sum, group) => sum + group.hits.length, 0),
+                          files: searchResults.length
+                        })}
+                      </div>
+                      {searchResults.map((group) => (
+                        <div key={group.path}>
+                          <div className="ed-result-file">
+                            <Icon name={fileIconName(group.path)} className={fileIconClass(group.path)} />
+                            <span className="op-truncate">{group.path}</span>
+                          </div>
+                          {group.hits.slice(0, 50).map((hit) => (
+                            <button
+                              key={`${group.path}:${hit.line}`}
+                              type="button"
+                              className="ed-result-row"
+                              onClick={() => void goToLine(group.path, hit.line)}
+                            >
+                              <span className="ed-result-line">{hit.line}</span>
+                              <span className="op-truncate">{highlightMatch(hit.text, projectSearch)}</span>
+                            </button>
+                          ))}
                         </div>
-                      ))
-                    )}
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </>
+            )}
+          </aside>
+        )}
+        {leftOpen && !narrowLeft && (
+          <div
+            className="ed-resizer"
+            role="separator"
+            tabIndex={0}
+            aria-orientation="vertical"
+            aria-label={t('Resize left panel')}
+            aria-valuenow={columnSizes.sidebar}
+            aria-valuemin={PANEL_LIMITS.left[0]}
+            aria-valuemax={PANEL_LIMITS.left[1]}
+            onMouseDown={(event) => startColumnDrag('left', event)}
+            onKeyDown={(event) => nudgeColumn('left', event)}
+            onDoubleClick={() => resetColumn('left')}
+          />
+        )}
+
+        <section
+          className={`ed-center mode-${viewMode}`}
+          ref={centerRef}
+          style={{ '--split': `${Math.round(columnSizes.editor * 1000) / 10}%` } as CSSProperties}
+          aria-label={t('Editor and preview')}
+        >
+          <div className="ed-center-bar">
+            <Icon name={activePath ? fileIconName(activePath) : 'file'} className={activePath ? fileIconClass(activePath) : ''} />
+            <span className="op-truncate ed-center-file">{activePath || t('未选择文件')}</span>
+            {currentHeading && <span className="op-truncate ed-center-heading op-hide-sm">{currentHeading.title}</span>}
+            <div className="op-fill" />
+            <SegmentedControl
+              label={t('View mode')}
+              value={viewMode}
+              onChange={setViewMode}
+              options={[
+                { value: 'editor', label: t('Editor'), icon: 'file-text' },
+                { value: 'split', label: t('Split'), icon: 'columns' },
+                { value: 'pdf', label: 'PDF', icon: 'eye' }
+              ]}
+            />
+          </div>
+          <div className="ed-panes">
+            <section className="ed-pane editor-panel" aria-label={t('Editor')}>
+              <div className="ed-toolbar">
+                <MenuButton className="op-btn op-btn-ghost op-btn-sm" items={insertMenuItems} menuLabel={t('Insert')}>
+                  <Icon name="plus" />
+                  <span className="ed-toolbar-label">{t('Insert')}</span>
+                  <Icon name="chevron-down" />
+                </MenuButton>
+                <Button variant="ghost" size="sm" icon="quote" onClick={insertCiteSnippet} aria-label={t('Cite')}>
+                  <span className="ed-toolbar-label">{t('Cite')}</span>
+                </Button>
+                <Button variant="ghost" size="sm" icon="link" onClick={insertRefSnippet} aria-label={t('Ref')}>
+                  <span className="ed-toolbar-label">{t('Ref')}</span>
+                </Button>
+                <Button variant="ghost" size="sm" icon="hash" onClick={insertLabelSnippet} aria-label={t('Label')}>
+                  <span className="ed-toolbar-label">{t('Label')}</span>
+                </Button>
+                <span className="ed-toolbar-sep" aria-hidden="true" />
+                <Button variant="ghost" size="sm" icon="sparkles" onClick={() => openRightTool('agent')} aria-label={t('Assistant')}>
+                  <span className="ed-toolbar-label">{t('Assistant')}</span>
+                </Button>
+                <div className="op-fill" />
+                <IconButton icon="minus" label={t('Smaller text')} onClick={() => setEditorFontSize((s) => Math.max(8, s - 1))} />
+                <span className="ed-font-size" aria-live="polite">{editorFontSize}px</span>
+                <IconButton icon="plus" label={t('Larger text')} tipPos="bottom-end" onClick={() => setEditorFontSize((s) => Math.min(24, s + 1))} />
+              </div>
+              <div
+                className="editor-split"
+                ref={editorSplitRef}
+              >
+                <div className="editor-area" ref={editorAreaRef}>
+                  <div ref={editorHostRef} className="editor-host" style={{ '--editor-font-size': `${editorFontSize}px` } as React.CSSProperties} />
+                  <div className="editor-hint muted">{t('快捷键: Option/Alt + / 或 Cmd/Ctrl + Space 补全；Cmd/Ctrl + / 注释；Cmd/Ctrl + F 搜索；Cmd/Ctrl + S 保存')}</div>
+                  {(inlineSuggestionText || isSuggesting) && suggestionPos && (
+                    <div
+                      className={`suggestion-popover ${isSuggesting && !inlineSuggestionText ? 'loading' : ''}`}
+                      style={{ left: suggestionPos.left, top: suggestionPos.top }}
+                    >
+                      {isSuggesting && !inlineSuggestionText ? (
+                        <div className="suggestion-loading">
+                          <span className="spinner" />
+                          {t('AI 补全中...')}
+                        </div>
+                      ) : (
+                        <>
+                          <div className="suggestion-preview">{inlineSuggestionText}</div>
+                          <div className="row">
+                            <button className="op-btn op-btn-primary" onClick={() => acceptSuggestionRef.current()}>{t('接受')}</button>
+                            <button className="op-btn op-btn-secondary op-btn-sm" onClick={() => clearSuggestionRef.current()}>{t('拒绝')}</button>
+                          </div>
+                        </>
+                      )}
+                    </div>
+                  )}
+                </div>
+              </div>
+            </section>
+            {viewMode === 'split' && (
+              <div
+                className="ed-resizer ed-split-resizer"
+                role="separator"
+                aria-orientation="vertical"
+                aria-label={t('Resize editor and preview')}
+                onMouseDown={(event) => startColumnDrag('split', event)}
+                onDoubleClick={() => resetColumn('split')}
+              />
+            )}
+            <section className="ed-pane pdf-panel" aria-label={t('Preview')}>
+              <div className="op-panel-header ed-preview-header">
+                <SegmentedControl label={t('Preview')} value={rightView} onChange={setRightView} options={previewOptions} />
+              </div>
+              <div className="right-body">
+                <div className="view-content">
+                  {rightView === 'pdf' && (
+                    <>
+                      <div className="pdf-toolbar">
+                        <div className="toolbar-group">
+                          <IconButton icon="zoom-out" label={t('缩小')} onClick={() => zoomPdf(-0.1)} disabled={!pdfUrl} />
+                          <div className="zoom-label">{pdfScaleLabel}</div>
+                          <IconButton icon="zoom-in" label={t('放大')} onClick={() => zoomPdf(0.1)} disabled={!pdfUrl} />
+                          <button className="op-btn op-btn-ghost op-btn-sm" onClick={() => setPdfFitWidth(true)} disabled={!pdfUrl}>{t('适合宽度')}</button>
+                          <button
+                            className="op-btn op-btn-ghost op-btn-sm"
+                            onClick={() => {
+                              setPdfFitWidth(false);
+                              setPdfScale(1);
+                            }}
+                            disabled={!pdfUrl}
+                          >
+                            100%
+                          </button>
+                        </div>
+                        <div className="toolbar-group">
+                          <IconButton icon="download" label={t('下载 PDF')} tipPos="bottom-end" onClick={downloadPdf} disabled={!pdfUrl} />
+                          <button
+                            className="op-btn op-btn-ghost op-btn-sm"
+                            aria-pressed={pdfSpread}
+                            onClick={() => setPdfSpread((prev) => !prev)}
+                            disabled={!pdfUrl}
+                          >
+                            {t('双页')}
+                          </button>
+                          <button
+                            className="op-btn op-btn-ghost op-btn-sm"
+                            aria-pressed={pdfAnnotateMode}
+                            onClick={() => setPdfAnnotateMode((prev) => !prev)}
+                            disabled={!pdfUrl}
+                          >
+                            {t('注释')}
+                          </button>
+                        </div>
+                      </div>
+                      {pdfUrl ? (
+                        <PdfPreview
+                          pdfUrl={pdfUrl}
+                          scale={pdfScale}
+                          fitWidth={pdfFitWidth}
+                          spread={pdfSpread}
+                          onFitScale={handleFitScale}
+                          onOutline={handlePdfOutline}
+                          annotations={pdfAnnotations}
+                          annotateMode={pdfAnnotateMode}
+                          onAddAnnotation={addPdfAnnotation}
+                          containerRef={pdfContainerRef}
+                          onTextClick={(text) => {
+                            const view = cmViewRef.current;
+                            if (!view) return;
+                            const docText = view.state.doc.toString();
+                            const needle = text.replace(/\s+/g, ' ').trim();
+                            if (!needle) return;
+                            const idx = docText.indexOf(needle);
+                            if (idx >= 0) {
+                              view.dispatch({
+                                selection: { anchor: idx, head: idx + needle.length },
+                                scrollIntoView: true
+                              });
+                              view.focus();
+                            }
+                          }}
+                        />
+                      ) : (
+                        <EmptyState icon="file-text" title={t('尚未生成 PDF')} action={<Button size="sm" icon="play" onClick={compile} loading={isCompiling}>{t('编译 PDF')}</Button>}>{t('Compile to see the PDF here.')}</EmptyState>
+                      )}
+                      {pdfAnnotations.length > 0 && (
+                        <div className="pdf-annotations">
+                          <div className="muted">{t('注释')}</div>
+                          <div className="annotation-list">
+                            {pdfAnnotations.map((note) => (
+                              <div key={note.id} className="annotation-item">
+                                <button
+                                  className="annotation-link"
+                                  onClick={() => scrollToPdfPage(note.page)}
+                                >
+                                  P{note.page}
+                                </button>
+                                <div className="annotation-text">{note.text}</div>
+                                <IconButton
+                                  icon="x"
+                                  label={t('删除')}
+                                  className="annotation-remove"
+                                  onClick={() =>
+                                    setPdfAnnotations((prev) => prev.filter((item) => item.id !== note.id))
+                                  }
+                                />
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </>
+                  )}
+                  {rightView === 'toc' && (
+                    <div className="toc-panel">
+                      <div className="toc-title">{t('目录')}</div>
+                      {pdfOutline.length === 0 ? (
+                        <div className="muted">{t('暂无目录信息。')}</div>
+                      ) : (
+                        <div className="toc-list">
+                          {pdfOutline.map((item, idx) => (
+                            <button
+                              key={`${item.title}-${idx}`}
+                              className={`toc-item level-${item.level}`}
+                              onClick={() => {
+                                if (item.page) {
+                                  setRightView('pdf');
+                                  scrollToPdfPage(item.page);
+                                }
+                              }}
+                            >
+                              <span className="toc-title-text">{item.title}</span>
+                              {item.page && <span className="toc-page">P{item.page}</span>}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                  {rightView === 'figures' && (
+                    <div className="figure-panel-v2">
+                      <div className="figure-topbar">
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <Select
+                            ariaLabel={t('选择图片进行预览。')}
+                            value={selectedFigure}
+                            placeholder={t('选择图片进行预览。')}
+                            options={figureFiles.map((item) => ({ value: item.path, label: item.path }))}
+                            onChange={(v) => setSelectedFigure(v)}
+                          />
+                        </div>
+                        {selectedFigure && (
+                          <button
+                            type="button"
+                            className="op-btn op-btn-primary op-btn-sm"
+                            onClick={() => insertFigureSnippet(selectedFigure)}
+                          >
+                            <Icon name="plus" />
+                            {t('插入到光标')}
+                          </button>
+                        )}
+                      </div>
+                      <div className="figure-display">
+                        {selectedFigure ? (
+                          selectedFigure.toLowerCase().endsWith('.pdf') ? (
+                            <object data={blobUrl(projectId, selectedFigure)} type="application/pdf" />
+                          ) : (
+                            <img src={blobUrl(projectId, selectedFigure)} alt={selectedFigure} />
+                          )
+                        ) : (
+                          <EmptyState icon="image" title={t('选择图片进行预览。')} />
+                        )}
+                      </div>
+                    </div>
+                  )}
+                  {rightView === 'diff' && (
+                    <div className="diff-panel">
+                      <div className="diff-title">{t('Diff Preview ({{count}})', { count: pendingGrouped.length })}</div>
+                      {pendingGrouped.length === 0 && <div className="muted">{t('暂无待确认修改。')}</div>}
+                      {pendingGrouped.map((change) => (
+                        (() => {
+                          const rows = buildSplitDiff(change.original, change.proposed);
+                          return (
+                            <div key={change.filePath} className="diff-item">
+                              <div className="diff-header">
+                                <div className="diff-path">{change.filePath}</div>
+                                <IconButton icon="maximize" label={t('放大')} tipPos="bottom-end" onClick={() => setDiffFocus(change)} />
+                              </div>
+                              <SplitDiffView rows={rows} />
+                              <div className="row">
+                                <button className="op-btn op-btn-primary" onClick={() => applyPending(change)}>{t('应用此修改')}</button>
+                                <button className="op-btn op-btn-secondary op-btn-sm" onClick={() => discardPending(change)}>{t('放弃')}</button>
+                              </div>
+                            </div>
+                          );
+                        })()
+                      ))}
+                      {pendingGrouped.length > 1 && (
+                        <div className="row">
+                          <button className="op-btn op-btn-primary" onClick={() => applyPending()}>{t('应用全部')}</button>
+                          <button className="op-btn op-btn-secondary op-btn-sm" onClick={() => discardPending()}>{t('全部放弃')}</button>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                  {rightView === 'log' && (
+                    <div className="log-panel">
+                      <div className="log-title">
+                        {t('Compile Log')}
+                        <button className="op-btn op-btn-secondary op-btn-sm" onClick={diagnoseCompile} disabled={diagnoseBusy}>
+                          {diagnoseBusy ? (
+                            <span className="suggestion-loading">
+                              <span className="spinner" />
+                              {t('诊断中...')}
+                            </span>
+                          ) : (
+                            t('一键诊断')
+                          )}
+                        </button>
+                      </div>
+                      {compileErrors.length > 0 && (
+                        <div className="log-errors">
+                          {compileErrors.map((error, idx) => (
+                            <button
+                              key={`${error.message}-${idx}`}
+                              className="error-item"
+                              onClick={() => jumpToError(error)}
+                            >
+                              <Icon name="alert-circle" className="error-tag" />
+                              <span className="error-text">{error.message}</span>
+                              {error.line && <span className="error-line">L{error.line}</span>}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                      <pre className="log-content">{compileLog || t('暂无编译日志')}</pre>
+                    </div>
+                  )}
+                  {rightView === 'review' && (
+                    <div className="log-panel">
+                      <div className="log-title">{t('评审报告')}</div>
+                      <div className="log-content markdown-body">
+                        {reviewReport ? (
+                          <ReactMarkdown remarkPlugins={[remarkGfm]}>{reviewReport}</ReactMarkdown>
+                        ) : (
+                          t('暂无评审报告')
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </section>
+          </div>
+        </section>
+
+        {rightOpen && !narrowRight && (
+          <div
+            className="ed-resizer"
+            role="separator"
+            tabIndex={0}
+            aria-orientation="vertical"
+            aria-label={t('Resize right panel')}
+            aria-valuenow={columnSizes.right}
+            aria-valuemin={PANEL_LIMITS.right[0]}
+            aria-valuemax={PANEL_LIMITS.right[1]}
+            onMouseDown={(event) => startColumnDrag('right', event)}
+            onKeyDown={(event) => nudgeColumn('right', event)}
+            onDoubleClick={() => resetColumn('right')}
+          />
+        )}
+        {rightOpen && (
+          <aside
+            className="ed-side ed-side-right"
+            style={{ '--w': `${columnSizes.right}px` } as CSSProperties}
+            aria-label={t('Right panel')}
+          >
+            {activeSidebar === 'collab' ? (
+              <>
+                <PanelHeader
+                  title={t('协作')}
+                  side="right"
+                  onCollapse={() => setRightOpen(false)}
+                  collapseLabel={t('Collapse panel')}
+                  actions={
+                    <Badge
+                      tone={collabStatus === 'connected' ? 'success' : collabStatus === 'connecting' ? 'info' : 'neutral'}
+                      icon={collabStatus === 'connecting' ? 'loader' : collabStatus === 'connected' ? 'check-circle' : 'info'}
+                      spin={collabStatus === 'connecting'}
+                    >
+                      {collabStatus === 'connected' ? t('已连接') : collabStatus === 'connecting' ? t('连接中...') : t('未连接')}
+                    </Badge>
+                  }
+                />
+                <div className="ed-panel-body">
+                  <div className="collab-panel">
+                    <div className="collab-row">
+                      <input
+                        className="op-input"
+                        value={collabServer}
+                        onChange={(e) => setCollabServerState(e.target.value)}
+                        placeholder={t('协作服务器地址')}
+                      />
+                    </div>
+                    <div className="collab-row">
+                      <input
+                        className="op-input"
+                        value={collabName}
+                        onChange={(e) => setCollabName(e.target.value)}
+                        placeholder={t('显示名称')}
+                      />
+                      <button
+                        className="op-btn op-btn-secondary"
+                        onClick={() => setCollabEnabled((prev) => !prev)}
+                        disabled={!activePath || !isTextPath(activePath)}
+                      >
+                        {collabEnabled ? t('断开') : t('连接')}
+                      </button>
+                    </div>
+                    <div className="collab-row">
+                      <button
+                        className="op-btn op-btn-primary"
+                        onClick={() => handleCreateInvite()}
+                        disabled={collabInviteBusy || !projectId}
+                      >
+                        {collabInviteBusy ? t('生成中...') : t('生成邀请链接')}
+                      </button>
+                      <button
+                        className="op-btn op-btn-secondary"
+                        onClick={() => copyInviteLink()}
+                        disabled={!collabInviteLink}
+                      >
+                        {t('复制')}
+                      </button>
+                    </div>
+                    <div className="collab-row">
+                      <input
+                        className="op-input"
+                        readOnly
+                        value={collabInviteLink || ''}
+                        placeholder={t('尚未生成邀请链接')}
+                      />
+                    </div>
+                    <div className="collab-row">
+                      <div className="muted">
+                        {activePath ? t('当前文件: {{path}}', { path: activePath }) : t('未选择文件')}
+                      </div>
+                    </div>
+                    <div className="collab-users">
+                      {collabPeers.length === 0 ? (
+                        <div className="muted">{t('暂无协作者在线')}</div>
+                      ) : (
+                        collabPeers.map((peer) => (
+                          <div key={peer.id} className="collab-user">
+                            <span className="dot" style={{ background: peer.color }} />
+                            <span>{peer.name}</span>
+                          </div>
+                        ))
+                      )}
+                    </div>
                   </div>
                 </div>
               </>
             ) : activeSidebar === 'agent' ? (
               <>
-                <div className="panel-header">
-                  <div>{assistantMode === 'chat' ? t('Chat') : t('Agent')}</div>
-                  <div className="panel-actions">
-                    <div className="mode-toggle">
-                      <button
-                        className={`mode-btn ${assistantMode === 'chat' ? 'active' : ''}`}
-                        onClick={() => setAssistantMode('chat')}
-                      >
-                        {t('Chat')}
-                      </button>
-                      <button
-                        className={`mode-btn ${assistantMode === 'agent' ? 'active' : ''}`}
-                        onClick={() => setAssistantMode('agent')}
-                      >
-                        {t('Agent')}
-                      </button>
-                    </div>
-                  </div>
+                <PanelHeader title={t('Assistant')} side="right" onCollapse={() => setRightOpen(false)} collapseLabel={t('Collapse panel')} />
+                <div className="ed-tool-top">
+                  <SegmentedControl
+                    block
+                    label={t('Assistant mode')}
+                    value={assistantMode}
+                    onChange={setAssistantMode}
+                    options={[
+                      { value: 'chat', label: t('Chat'), icon: 'chat' },
+                      { value: 'agent', label: t('Agent'), icon: 'bot' }
+                    ]}
+                  />
                 </div>
-                {assistantMode === 'chat' && (
-                  <div className="context-tags">
-                    <span className="context-tag">{t('只读当前文件')}</span>
-                    {selectionText && <span className="context-tag">{t('只读选区')}</span>}
-                    {compileLog && <span className="context-tag">{t('只读编译日志')}</span>}
-                  </div>
-                )}
-                <div className="chat-messages">
-                  {assistantMode === 'chat' && chatMessages.length === 0 && (
-                    <div className="muted">{t('输入问题，进行只读对话。')}</div>
-                  )}
-                  {assistantMode === 'agent' && agentMessages.length === 0 && (
-                    <div className="muted">{t('输入任务描述，生成修改建议。')}</div>
-                  )}
-                  {(assistantMode === 'chat' ? chatMessages : agentMessages).map((msg, idx) => (
-                    <div key={idx} className={`chat-msg ${msg.role}`}>
-                      <div className="role">{msg.role}</div>
-                      <div className={`content ${msg.role === 'assistant' ? 'markdown-body' : ''}`}>
-                        {msg.role === 'assistant' ? (
-                          <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.content}</ReactMarkdown>
-                        ) : (
-                          msg.content
-                        )}
-                      </div>
+                <div className="ed-agent">
+                  {assistantMode === 'chat' && (
+                    <div className="context-tags">
+                      <span className="context-tag">{t('只读当前文件')}</span>
+                      {selectionText && <span className="context-tag">{t('只读选区')}</span>}
+                      {compileLog && <span className="context-tag">{t('只读编译日志')}</span>}
                     </div>
-                  ))}
-                </div>
-                <div className="chat-controls">
-                  <div className="row chat-control-row">
-                    {assistantMode === 'agent' ? (
-                      <>
-                        <div className="ios-select-wrapper">
-                          <button
-                            className="ios-select-trigger"
-                            onClick={() => {
-                              setTaskDropdownOpen(!taskDropdownOpen);
-                              setModeDropdownOpen(false);
-                            }}
-                          >
-                            <span>{DEFAULT_TASKS(t).find((item) => item.value === task)?.label || t('选择任务')}</span>
-                            <svg width="12" height="12" viewBox="0 0 12 12" fill="none" className={taskDropdownOpen ? 'rotate' : ''}>
-                              <path d="M3 7L6 4L9 7" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
-                            </svg>
-                          </button>
-                          {taskDropdownOpen && (
-                            <div className="ios-dropdown">
-                              {DEFAULT_TASKS(t).map((item) => (
-                                <div
-                                  key={item.value}
-                                  className={`ios-dropdown-item ${task === item.value ? 'active' : ''}`}
-                                  onClick={() => {
-                                    setTask(item.value);
-                                    setTaskDropdownOpen(false);
-                                  }}
-                                >
-                                  {item.label}
-                                  {task === item.value && (
-                                    <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-                                      <path d="M3 8L6.5 11.5L13 5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-                                    </svg>
-                                  )}
-                                </div>
-                              ))}
-                            </div>
+                  )}
+                  <div className="chat-messages">
+                    {assistantMode === 'chat' && chatMessages.length === 0 && (
+                      <div className="muted">{t('输入问题，进行只读对话。')}</div>
+                    )}
+                    {assistantMode === 'agent' && agentMessages.length === 0 && (
+                      <div className="muted">{t('输入任务描述，生成修改建议。')}</div>
+                    )}
+                    {(assistantMode === 'chat' ? chatMessages : agentMessages).map((msg, idx) => (
+                      <div key={idx} className={`chat-msg ${msg.role}`}>
+                        <div className="role">{msg.role}</div>
+                        <div className={`content ${msg.role === 'assistant' ? 'markdown-body' : ''}`}>
+                          {msg.role === 'assistant' ? (
+                            <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.content}</ReactMarkdown>
+                          ) : (
+                            msg.content
                           )}
                         </div>
-                        <div className="agent-mode-wrap">
-                          <div className="ios-select-wrapper">
-                            <button
-                              className="ios-select-trigger"
-                              onClick={() => {
-                                setModeDropdownOpen(!modeDropdownOpen);
-                                setTaskDropdownOpen(false);
-                              }}
-                            >
-                              <span>{mode === 'direct' ? t('Direct') : t('Tools')}</span>
-                              <svg width="12" height="12" viewBox="0 0 12 12" fill="none" className={modeDropdownOpen ? 'rotate' : ''}>
-                                <path d="M3 7L6 4L9 7" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
-                              </svg>
-                            </button>
-                            {modeDropdownOpen && (
-                              <div className="ios-dropdown">
-                                <div
-                                  className={`ios-dropdown-item ${mode === 'direct' ? 'active' : ''}`}
-                                  onClick={() => {
-                                    setMode('direct');
-                                    setModeDropdownOpen(false);
-                                  }}
-                                >
-                                  {t('Direct')}
-                                  {mode === 'direct' && (
-                                    <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-                                      <path d="M3 8L6.5 11.5L13 5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-                                    </svg>
-                                  )}
-                                </div>
-                                <div
-                                  className={`ios-dropdown-item ${mode === 'tools' ? 'active' : ''}`}
-                                  onClick={() => {
-                                    setMode('tools');
-                                    setModeDropdownOpen(false);
-                                  }}
-                                >
-                                  {t('Tools')}
-                                  {mode === 'tools' && (
-                                    <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-                                      <path d="M3 8L6.5 11.5L13 5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-                                    </svg>
-                                  )}
-                                </div>
-                              </div>
-                            )}
+                      </div>
+                    ))}
+                  </div>
+                  <div className="chat-controls">
+                    <div className="row chat-control-row">
+                      {assistantMode === 'agent' ? (
+                        <>
+                          <Select size="sm" ariaLabel={t('选择任务')} value={task} options={DEFAULT_TASKS(t)} onChange={(v) => setTask(v)} />
+                          <div className="agent-mode-wrap">
+                            <Select
+                              size="sm"
+                              ariaLabel={t('Agent')}
+                              value={mode}
+                              options={[{ value: 'direct', label: t('Direct') }, { value: 'tools', label: t('Tools') }]}
+                              onChange={(v) => setMode(v)}
+                            />
+                            <span className="info-icon" tabIndex={0} aria-label={t('Direct: 单轮生成 · Tools: 多轮工具调用/多文件修改')}>
+                              <Icon name="info" />
+                              <span className="tooltip">{t('Direct: 单轮生成 · Tools: 多轮工具调用/多文件修改')}</span>
+                            </span>
                           </div>
-                          <span className="info-icon">
-                            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
-                              <circle cx="8" cy="8" r="7" stroke="currentColor" strokeWidth="1.5" fill="none"/>
-                              <path d="M8 7V11" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
-                              <circle cx="8" cy="5" r="0.5" fill="currentColor"/>
-                            </svg>
-                            <span className="tooltip">{t('Direct: 单轮生成 · Tools: 多轮工具调用/多文件修改')}</span>
-                          </span>
-                        </div>
-                      </>
-                    ) : (
-                      <div className="muted">{t('Chat 模式仅对话，不会改动文件。')}</div>
+                        </>
+                      ) : (
+                        <div className="muted">{t('Chat 模式仅对话，不会改动文件。')}</div>
+                      )}
+                    </div>
+                    {assistantMode === 'agent' && task === 'translate' && (
+                      <div className="row chat-control-row">
+                        <Select
+                          size="sm"
+                          ariaLabel={t('翻译')}
+                          value={translateScope}
+                          options={[
+                            { value: 'selection', label: t('选区') },
+                            { value: 'file', label: t('当前文件') },
+                            { value: 'project', label: t('整个项目') }
+                          ]}
+                          onChange={(v) => setTranslateScope(v)}
+                        />
+                        <Select size="sm" ariaLabel={t('翻译')} value={translateTarget} options={translateTargetOptions} onChange={(v) => setTranslateTarget(v)} />
+                      </div>
+                    )}
+                    <textarea
+                      className="op-textarea chat-input"
+                      value={prompt}
+                      onChange={(e) => setPrompt(e.target.value)}
+                      placeholder={assistantMode === 'chat' ? t('例如：帮我解释这一段的实验设计。') : t('例如：润色这个段落，使其更符合 ACL 风格。')}
+                    />
+                    <button onClick={sendPrompt} className="op-btn op-btn-primary op-btn-block">
+                      {assistantMode === 'chat' ? t('发送') : t('生成建议')}
+                    </button>
+                    {selectionText && assistantMode === 'agent' && (
+                      <div className="muted">{t('已选择 {{count}} 字符，将用于任务输入', { count: selectionText.length })}</div>
+                    )}
+                    {assistantMode === 'agent' && task === 'translate' && translateScope === 'selection' && !selectionText && (
+                      <div className="muted">{t('翻译选区前请先选择文本。')}</div>
                     )}
                   </div>
-                  {assistantMode === 'agent' && task === 'translate' && (
-                    <div className="row chat-control-row">
-                      <div className="ios-select-wrapper">
-                        <button
-                          className="ios-select-trigger"
-                          onClick={() => {
-                            setTranslateScopeDropdownOpen(!translateScopeDropdownOpen);
-                            setTranslateTargetDropdownOpen(false);
-                          }}
-                          >
-                          <span>
-                            {translateScope === 'selection' ? t('选区') : translateScope === 'file' ? t('当前文件') : t('整个项目')}
-                          </span>
-                          <svg width="12" height="12" viewBox="0 0 12 12" fill="none" className={translateScopeDropdownOpen ? 'rotate' : ''}>
-                            <path d="M3 7L6 4L9 7" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
-                          </svg>
-                        </button>
-                        {translateScopeDropdownOpen && (
-                          <div className="ios-dropdown">
-                            {[
-                              { value: 'selection', label: t('选区') },
-                              { value: 'file', label: t('当前文件') },
-                              { value: 'project', label: t('整个项目') }
-                            ].map((item) => (
-                              <div
-                                key={item.value}
-                                className={`ios-dropdown-item ${translateScope === item.value ? 'active' : ''}`}
-                                onClick={() => {
-                                  setTranslateScope(item.value as 'selection' | 'file' | 'project');
-                                  setTranslateScopeDropdownOpen(false);
-                                }}
-                              >
-                                {item.label}
-                                {translateScope === item.value && (
-                                  <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-                                    <path d="M3 8L6.5 11.5L13 5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-                                  </svg>
-                                )}
-                              </div>
-                            ))}
-                          </div>
-                        )}
-                      </div>
-                      <div className="ios-select-wrapper">
-                        <button
-                          className="ios-select-trigger"
-                          onClick={() => {
-                            setTranslateTargetDropdownOpen(!translateTargetDropdownOpen);
-                            setTranslateScopeDropdownOpen(false);
-                          }}
-                        >
-                          <span>{translateTargetOptions.find((item) => item.value === translateTarget)?.label || translateTarget}</span>
-                          <svg width="12" height="12" viewBox="0 0 12 12" fill="none" className={translateTargetDropdownOpen ? 'rotate' : ''}>
-                            <path d="M3 7L6 4L9 7" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
-                          </svg>
-                        </button>
-                        {translateTargetDropdownOpen && (
-                          <div className="ios-dropdown">
-                            {translateTargetOptions.map((lang) => (
-                              <div
-                                key={lang.value}
-                                className={`ios-dropdown-item ${translateTarget === lang.value ? 'active' : ''}`}
-                                onClick={() => {
-                                  setTranslateTarget(lang.value);
-                                  setTranslateTargetDropdownOpen(false);
-                                }}
-                              >
-                                {lang.label}
-                                {translateTarget === lang.value && (
-                                  <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-                                    <path d="M3 8L6.5 11.5L13 5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-                                  </svg>
-                                )}
-                              </div>
-                            ))}
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  )}
-                  <textarea
-                    className="chat-input"
-                    value={prompt}
-                    onChange={(e) => setPrompt(e.target.value)}
-                    placeholder={assistantMode === 'chat' ? t('例如：帮我解释这一段的实验设计。') : t('例如：润色这个段落，使其更符合 ACL 风格。')}
-                  />
-                  <button onClick={sendPrompt} className="btn full">
-                    {assistantMode === 'chat' ? t('发送') : t('生成建议')}
-                  </button>
-                  {selectionText && assistantMode === 'agent' && (
-                    <div className="muted">{t('已选择 {{count}} 字符，将用于任务输入', { count: selectionText.length })}</div>
-                  )}
-                  {assistantMode === 'agent' && task === 'translate' && translateScope === 'selection' && !selectionText && (
-                    <div className="muted">{t('翻译选区前请先选择文本。')}</div>
-                  )}
                 </div>
               </>
             ) : activeSidebar === 'vision' ? (
               <>
-                <div className="panel-header">
-                  <div>{t('图像识别')}</div>
-                  <div className="panel-actions">
-                    <button className="btn ghost" onClick={() => setVisionResult('')}>{t('清空结果')}</button>
-                  </div>
-                </div>
-                <div className="tools-body">
-                  <div className="tool-section">
-                    <div className="tool-title">{t('图像转 LaTeX')}</div>
-                    <div className="field">
-                      <label>{t('识别类型')}</label>
-                      <div className="ios-select-wrapper">
-                        <button className="ios-select-trigger" onClick={() => setVisionModeDropdownOpen(!visionModeDropdownOpen)}>
-                          <span>{({'equation':t('公式'),'table':t('表格'),'figure':t('图像 + 图注'),'algorithm':t('算法'),'ocr':t('仅提取文字')} as Record<string,string>)[visionMode]}</span>
-                          <svg width="12" height="12" viewBox="0 0 12 12" fill="none" className={visionModeDropdownOpen ? 'rotate' : ''}><path d="M3 5L6 8L9 5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
-                        </button>
-                        {visionModeDropdownOpen && (
-                          <div className="ios-dropdown dropdown-down">
-                            {([['equation',t('公式')],['table',t('表格')],['figure',t('图像 + 图注')],['algorithm',t('算法')],['ocr',t('仅提取文字')]] as [string,string][]).map(([val,lbl]) => (
-                              <div key={val} className={`ios-dropdown-item ${visionMode === val ? 'active' : ''}`} onClick={() => { setVisionMode(val as 'equation'|'table'|'figure'|'algorithm'|'ocr'); setVisionResult(''); setVisionModeDropdownOpen(false); }}>
-                                {lbl}
-                                {visionMode === val && <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M3 8L6.5 11.5L13 5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>}
-                              </div>
-                            ))}
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                    <div className="field">
-                      <label>{t('上传图片')}</label>
-                      <div
-                        className={`image-drop-zone ${visionFile ? 'has-file' : ''}`}
-                        onDragOver={(e) => { e.preventDefault(); e.currentTarget.classList.add('drag-over'); }}
-                        onDragLeave={(e) => { e.currentTarget.classList.remove('drag-over'); }}
-                        onDrop={(e) => {
-                          e.preventDefault();
-                          e.currentTarget.classList.remove('drag-over');
-                          const file = e.dataTransfer.files?.[0];
-                          if (file && file.type.startsWith('image/')) {
-                            setVisionFile(file);
-                            setVisionResult('');
-                          }
-                        }}
-                        onPaste={(e) => {
-                          const items = e.clipboardData?.items;
-                          if (!items) return;
-                          for (const item of items) {
-                            if (item.type.startsWith('image/')) {
-                              const file = item.getAsFile();
-                              if (file) {
-                                setVisionFile(file);
-                                setVisionResult('');
-                              }
-                              break;
-                            }
-                          }
-                        }}
-                        tabIndex={0}
-                      >
-                        <input
-                          type="file"
-                          accept="image/*"
-                          onChange={(e) => {
-                            const file = e.target.files?.[0] || null;
-                            setVisionFile(file);
+                <PanelHeader
+                  title={t('图像识别')}
+                  side="right"
+                  onCollapse={() => setRightOpen(false)}
+                  collapseLabel={t('Collapse panel')}
+                  actions={<Button variant="ghost" size="sm" onClick={() => setVisionResult('')} disabled={!visionResult}>{t('清空结果')}</Button>}
+                />
+                <div className="ed-panel-body">
+                  <div className="tools-body">
+                    <div className="tool-section">
+                      <div className="tool-title">{t('图像转 LaTeX')}</div>
+                      <div className="field">
+                        <label>{t('识别类型')}</label>
+                        <Select
+                          ariaLabel={t('识别类型')}
+                          value={visionMode}
+                          options={[
+                            { value: 'equation', label: t('公式') },
+                            { value: 'table', label: t('表格') },
+                            { value: 'figure', label: t('图像 + 图注') },
+                            { value: 'algorithm', label: t('算法') },
+                            { value: 'ocr', label: t('仅提取文字') }
+                          ]}
+                          onChange={(v) => {
+                            setVisionMode(v);
                             setVisionResult('');
                           }}
-                          style={{ display: 'none' }}
-                          id="vision-file-input"
                         />
-                        {visionFile ? (
-                          <div className="drop-zone-preview">
-                            <span className="file-name">{visionFile.name}</span>
-                            <button className="remove-btn" onClick={(e) => { e.stopPropagation(); setVisionFile(null); setVisionPreviewUrl(''); }}>✕</button>
-                          </div>
-                        ) : (
-                          <label htmlFor="vision-file-input" className="drop-zone-content">
-                            <span className="drop-icon"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg></span>
-                            <span className="drop-text">{t('点击选择、拖拽或粘贴图片')}</span>
-                          </label>
-                        )}
                       </div>
-                    </div>
-                    {visionPreviewUrl && (
-                      <div className="vision-preview">
-                        <img src={visionPreviewUrl} alt="preview" />
+                      <div className="field">
+                        <label>{t('上传图片')}</label>
+                        <div
+                          className={`image-drop-zone ${visionFile ? 'has-file' : ''}`}
+                          onDragOver={(e) => { e.preventDefault(); e.currentTarget.classList.add('drag-over'); }}
+                          onDragLeave={(e) => { e.currentTarget.classList.remove('drag-over'); }}
+                          onDrop={(e) => {
+                            e.preventDefault();
+                            e.currentTarget.classList.remove('drag-over');
+                            const file = e.dataTransfer.files?.[0];
+                            if (file && file.type.startsWith('image/')) {
+                              setVisionFile(file);
+                              setVisionResult('');
+                            }
+                          }}
+                          onPaste={(e) => {
+                            const items = e.clipboardData?.items;
+                            if (!items) return;
+                            for (const item of items) {
+                              if (item.type.startsWith('image/')) {
+                                const file = item.getAsFile();
+                                if (file) {
+                                  setVisionFile(file);
+                                  setVisionResult('');
+                                }
+                                break;
+                              }
+                            }
+                          }}
+                          tabIndex={0}
+                        >
+                          <input
+                            type="file"
+                            accept="image/*"
+                            onChange={(e) => {
+                              const file = e.target.files?.[0] || null;
+                              setVisionFile(file);
+                              setVisionResult('');
+                            }}
+                            style={{ display: 'none' }}
+                            id="vision-file-input"
+                          />
+                          {visionFile ? (
+                            <div className="drop-zone-preview">
+                              <span className="file-name">{visionFile.name}</span>
+                              <IconButton icon="x" label={t('移除')} onClick={(e) => { e.stopPropagation(); setVisionFile(null); setVisionPreviewUrl(''); }} />
+                            </div>
+                          ) : (
+                            <label htmlFor="vision-file-input" className="drop-zone-content">
+                              <span className="drop-icon"><Icon name="image" size={24} /></span>
+                              <span className="drop-text">{t('点击选择、拖拽或粘贴图片')}</span>
+                            </label>
+                          )}
+                        </div>
                       </div>
-                    )}
-                    <div className="field">
-                      <label>{t('附加约束 (可选)')}</label>
-                      <textarea
-                        className="input"
-                        value={visionPrompt}
-                        onChange={(event) => setVisionPrompt(event.target.value)}
-                        placeholder={t('例如：只输出 tabular，不要表格标题')}
-                        rows={2}
-                      />
-                    </div>
-                    <div className="vision-actions">
-                      <button className="ios-btn secondary" onClick={handleVisionSubmit} disabled={visionBusy}>
-                        {visionBusy ? t('识别中...') : t('开始识别')}
-                      </button>
-                      <button className="ios-btn primary" onClick={handleVisionInsert} disabled={!visionResult}>{t('插入到光标')}</button>
-                    </div>
-                    {visionResult && (
-                      <div className="vision-result">
-                        <div className="muted">{t('识别结果 (可编辑)：')}</div>
+                      {visionPreviewUrl && (
+                        <div className="vision-preview">
+                          <img src={visionPreviewUrl} alt="preview" />
+                        </div>
+                      )}
+                      <div className="field">
+                        <label>{t('附加约束 (可选)')}</label>
                         <textarea
-                          className="input"
-                          value={visionResult}
-                          onChange={(event) => setVisionResult(event.target.value)}
-                          rows={6}
+                          className="op-input"
+                          value={visionPrompt}
+                          onChange={(event) => setVisionPrompt(event.target.value)}
+                          placeholder={t('例如：只输出 tabular，不要表格标题')}
+                          rows={2}
                         />
                       </div>
-                    )}
+                      <div className="vision-actions">
+                        <button className="op-btn op-btn-secondary" onClick={handleVisionSubmit} disabled={visionBusy}>
+                          {visionBusy ? t('识别中...') : t('开始识别')}
+                        </button>
+                        <button className="op-btn op-btn-primary" onClick={handleVisionInsert} disabled={!visionResult}>{t('插入到光标')}</button>
+                      </div>
+                      {visionResult && (
+                        <div className="vision-result">
+                          <div className="muted">{t('识别结果 (可编辑)：')}</div>
+                          <textarea
+                            className="op-input"
+                            value={visionResult}
+                            onChange={(event) => setVisionResult(event.target.value)}
+                            rows={6}
+                          />
+                        </div>
+                      )}
+                    </div>
                   </div>
                 </div>
               </>
             ) : activeSidebar === 'search' ? (
               <>
-                <div className="panel-header">
-                  <div>{t('论文检索')}</div>
-                </div>
-                <div className="tools-body">
-                  <div className="tool-section">
-                    <div className="tool-title">{t('arXiv 检索')}</div>
-                    <div className="field">
-                      <label>{t('关键词')}</label>
-                      <input
-                        className="input"
-                        value={arxivQuery}
-                        onChange={(event) => setArxivQuery(event.target.value)}
-                        placeholder={t('例如: diffusion transformer compression')}
-                      />
-                    </div>
-                    <div className="row">
-                      <input
-                        className="input small"
-                        type="number"
-                        min={1}
-                        max={10}
-                        value={arxivMaxResults}
-                        onChange={(event) => setArxivMaxResults(Number(event.target.value) || 5)}
-                      />
-                      <button className="btn ghost" onClick={handleArxivSearch} disabled={arxivBusy}>
-                        {arxivBusy ? t('检索中...') : useLlmSearch ? t('LLM 检索') : t('检索')}
-                      </button>
-                    </div>
-                    <label className="checkbox-row">
-                      <input
-                        type="checkbox"
-                        checked={useLlmSearch}
-                        onChange={(event) => setUseLlmSearch(event.target.checked)}
-                      />
-                      {t('使用 Websearch 模型')}
-                    </label>
-                    {arxivStatus && <div className="muted">{arxivStatus}</div>}
-                    {llmSearchOutput && (
-                      <div className="vision-result">
-                        <div className="muted">{t('LLM 原始输出')}</div>
-                        <textarea
-                          className="input"
-                          value={llmSearchOutput}
-                          onChange={(event) => setLlmSearchOutput(event.target.value)}
-                          rows={5}
+                <PanelHeader title={t('论文检索')} side="right" onCollapse={() => setRightOpen(false)} collapseLabel={t('Collapse panel')} />
+                <div className="ed-panel-body">
+                  <div className="tools-body">
+                    <div className="tool-section">
+                      <div className="tool-title">{t('arXiv 检索')}</div>
+                      <div className="field">
+                        <label>{t('关键词')}</label>
+                        <input
+                          className="op-input"
+                          value={arxivQuery}
+                          onChange={(event) => setArxivQuery(event.target.value)}
+                          placeholder={t('例如: diffusion transformer compression')}
                         />
                       </div>
-                    )}
-                    {arxivResults.length > 0 && (
-                      <div className="tool-list">
-                        {arxivResults.map((paper) => (
-                          <label key={paper.arxivId} className="tool-item">
-                            <input
-                              type="checkbox"
-                              checked={Boolean(arxivSelected[paper.arxivId])}
-                              onChange={(event) => {
-                                const checked = event.target.checked;
-                                setArxivSelected((prev) => ({ ...prev, [paper.arxivId]: checked }));
-                              }}
-                            />
-                            <div>
-                              <div className="tool-item-title">{paper.title}</div>
-                              <div className="muted">{paper.authors?.join(', ') || t('Unknown authors')}</div>
-                              <div className="muted">{paper.arxivId}</div>
-                            </div>
-                          </label>
-                        ))}
-                      </div>
-                    )}
-                    <div className="field">
-                      <label>{t('Bib 文件')}</label>
-                      <div className="ios-select-wrapper">
-                        <button className="ios-select-trigger" onClick={() => setBibTargetDropdownOpen(!bibTargetDropdownOpen)}>
-                          <span>{bibTarget || t('(新建/选择 Bib 文件)')}</span>
-                          <svg width="12" height="12" viewBox="0 0 12 12" fill="none" className={bibTargetDropdownOpen ? 'rotate' : ''}><path d="M3 5L6 8L9 5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                      <div className="row">
+                        <input
+                          className="op-input ed-input-narrow"
+                          type="number"
+                          min={1}
+                          max={10}
+                          value={arxivMaxResults}
+                          onChange={(event) => setArxivMaxResults(Number(event.target.value) || 5)}
+                        />
+                        <button className="op-btn op-btn-secondary op-btn-sm" onClick={handleArxivSearch} disabled={arxivBusy}>
+                          {arxivBusy ? t('检索中...') : useLlmSearch ? t('LLM 检索') : t('检索')}
                         </button>
-                        {bibTargetDropdownOpen && (
-                          <div className="ios-dropdown dropdown-down">
-                            <div className={`ios-dropdown-item ${bibTarget === '' ? 'active' : ''}`} onClick={() => { setBibTarget(''); setBibTargetDropdownOpen(false); }}>
-                              {t('(新建/选择 Bib 文件)')}
-                              {bibTarget === '' && <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M3 8L6.5 11.5L13 5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>}
-                            </div>
-                            {bibFiles.map((p) => (
-                              <div key={p} className={`ios-dropdown-item ${bibTarget === p ? 'active' : ''}`} onClick={() => { setBibTarget(p); setBibTargetDropdownOpen(false); }}>
-                                {p}
-                                {bibTarget === p && <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M3 8L6.5 11.5L13 5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>}
-                              </div>
-                            ))}
-                          </div>
-                        )}
                       </div>
-                      <button className="btn ghost" onClick={async () => {
-                        const created = await createBibFile();
-                        if (created) setBibTarget(created);
-                      }}>{t('新建 Bib')}</button>
-                    </div>
-                    <label className="checkbox-row">
-                      <input
-                        type="checkbox"
-                        checked={autoInsertCite}
-                        onChange={(event) => setAutoInsertCite(event.target.checked)}
-                      />
-                      {t('自动插入引用到当前 TeX')}
-                    </label>
-                    <label className="checkbox-row">
-                      <input
-                        type="checkbox"
-                        checked={autoInsertToMain}
-                        onChange={(event) => setAutoInsertToMain(event.target.checked)}
-                      />
-                      {t('AI 插入引用到指定 TeX')}
-                    </label>
-                    {autoInsertToMain && (
-                      <div className="field">
-                        <label>{t('引用插入目标')}</label>
-                        <div className="ios-select-wrapper">
-                          <button className="ios-select-trigger" onClick={() => setCiteTargetDropdownOpen(!citeTargetDropdownOpen)}>
-                            <span>{citeTargetFile || texFiles[0] || 'main.tex'}</span>
-                            <svg width="12" height="12" viewBox="0 0 12 12" fill="none" className={citeTargetDropdownOpen ? 'rotate' : ''}><path d="M3 5L6 8L9 5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
-                          </button>
-                          {citeTargetDropdownOpen && (
-                            <div className="ios-dropdown dropdown-down">
-                              {texFiles.map((p) => (
-                                <div key={p} className={`ios-dropdown-item ${citeTargetFile === p ? 'active' : ''}`} onClick={() => { setCiteTargetFile(p); setCiteTargetDropdownOpen(false); }}>
-                                  {p}
-                                  {citeTargetFile === p && <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M3 8L6.5 11.5L13 5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>}
-                                </div>
-                              ))}
-                            </div>
-                          )}
+                      <label className="checkbox-row">
+                        <input
+                          type="checkbox"
+                          checked={useLlmSearch}
+                          onChange={(event) => setUseLlmSearch(event.target.checked)}
+                        />
+                        {t('使用 Websearch 模型')}
+                      </label>
+                      {arxivStatus && <div className="muted">{arxivStatus}</div>}
+                      {llmSearchOutput && (
+                        <div className="vision-result">
+                          <div className="muted">{t('LLM 原始输出')}</div>
+                          <textarea
+                            className="op-input"
+                            value={llmSearchOutput}
+                            onChange={(event) => setLlmSearchOutput(event.target.value)}
+                            rows={5}
+                          />
                         </div>
+                      )}
+                      {arxivResults.length > 0 && (
+                        <div className="tool-list">
+                          {arxivResults.map((paper) => (
+                            <label key={paper.arxivId} className="tool-item">
+                              <input
+                                type="checkbox"
+                                checked={Boolean(arxivSelected[paper.arxivId])}
+                                onChange={(event) => {
+                                  const checked = event.target.checked;
+                                  setArxivSelected((prev) => ({ ...prev, [paper.arxivId]: checked }));
+                                }}
+                              />
+                              <div>
+                                <div className="tool-item-title">{paper.title}</div>
+                                <div className="muted">{paper.authors?.join(', ') || t('Unknown authors')}</div>
+                                <div className="muted">{paper.arxivId}</div>
+                              </div>
+                            </label>
+                          ))}
+                        </div>
+                      )}
+                      <div className="field">
+                        <label>{t('Bib 文件')}</label>
+                        <Select
+                          ariaLabel={t('Bib 文件')}
+                          value={bibTarget}
+                          options={[{ value: '', label: t('(新建/选择 Bib 文件)') }, ...bibFiles.map((p) => ({ value: p, label: p }))]}
+                          onChange={(v) => setBibTarget(v)}
+                        />
+                        <button className="op-btn op-btn-secondary op-btn-sm" onClick={async () => {
+                          const created = await createBibFile();
+                          if (created) setBibTarget(created);
+                        }}>{t('新建 Bib')}</button>
                       </div>
-                    )}
-                    <div className="row">
-                      <button className="btn" onClick={handleArxivApply} disabled={arxivBusy}>
-                        {t('写入 Bib / 插入引用')}
-                      </button>
+                      <label className="checkbox-row">
+                        <input
+                          type="checkbox"
+                          checked={autoInsertCite}
+                          onChange={(event) => setAutoInsertCite(event.target.checked)}
+                        />
+                        {t('自动插入引用到当前 TeX')}
+                      </label>
+                      <label className="checkbox-row">
+                        <input
+                          type="checkbox"
+                          checked={autoInsertToMain}
+                          onChange={(event) => setAutoInsertToMain(event.target.checked)}
+                        />
+                        {t('AI 插入引用到指定 TeX')}
+                      </label>
+                      {autoInsertToMain && (
+                        <div className="field">
+                          <label>{t('引用插入目标')}</label>
+                          <Select
+                            ariaLabel={t('引用插入目标')}
+                            value={citeTargetFile || texFiles[0] || ''}
+                            placeholder="main.tex"
+                            options={texFiles.map((p) => ({ value: p, label: p }))}
+                            onChange={(v) => setCiteTargetFile(v)}
+                          />
+                        </div>
+                      )}
+                      <div className="row">
+                        <button className="op-btn op-btn-primary" onClick={handleArxivApply} disabled={arxivBusy}>
+                          {t('写入 Bib / 插入引用')}
+                        </button>
+                      </div>
                     </div>
                   </div>
                 </div>
               </>
             ) : activeSidebar === 'websearch' ? (
               <>
-                <div className="panel-header">
-                  <div>{t('Websearch')}</div>
-                </div>
-                <div className="tools-body">
-                  <div className="tool-section">
-                    <div className="tool-title">{t('多点检索')}</div>
-                    <div className="field">
-                      <label>{t('Query')}</label>
-                      <input
-                        className="input"
-                        value={websearchQuery}
-                        onChange={(event) => setWebsearchQuery(event.target.value)}
-                        placeholder={t('例如: diffusion editing for safety')}
-                      />
-                    </div>
-                    <div className="row">
-                      <button className="btn" onClick={runWebsearch} disabled={websearchBusy}>
-                        {websearchBusy ? t('检索中...') : t('开始检索')}
-                      </button>
-                    </div>
-                    <div className="websearch-log">
-                      {websearchLog.length === 0 ? (
-                        <div className="muted">{t('等待查询...')}</div>
-                      ) : (
-                        websearchLog.map((line, idx) => (
-                          <div key={idx} className="websearch-line">{line}</div>
-                        ))
-                      )}
-                    </div>
-                    {websearchResults.length > 0 && (
-                      <>
-                        <div className="row">
-                          <label className="checkbox-row">
-                            <input
-                              type="checkbox"
-                              checked={websearchSelectedAll}
-                              onChange={(event) => {
-                                const checked = event.target.checked;
-                                setWebsearchSelectedAll(checked);
-                                const next: Record<string, boolean> = {};
-                                websearchResults.forEach((item) => {
-                                  next[item.id] = checked;
-                                });
-                                setWebsearchSelected(next);
-                              }}
-                            />
-                            {t('全选')}
-                          </label>
-                          <button
-                            className="btn ghost small"
-                            onClick={() => {
-                              const keys = websearchResults
-                                .filter((item) => websearchSelected[item.id])
-                                .map((item) => item.citeKey)
-                                .filter(Boolean);
-                              if (keys.length > 0) {
-                                insertAtCursor(`\\cite{${keys.join(',')}}`);
-                                appendLog(setWebsearchLog, t('已插入选中引用到光标。'));
-                              }
-                            }}
-                          >
-                            {t('插入选中引用')}
-                          </button>
-                        </div>
-                        <div className="tool-list">
-                          {websearchResults.map((paper) => (
-                            <label key={paper.id} className="tool-item">
-                              <input
-                                type="checkbox"
-                                checked={Boolean(websearchSelected[paper.id])}
-                                onChange={(event) => {
-                                  const checked = event.target.checked;
-                                  setWebsearchSelected((prev) => ({ ...prev, [paper.id]: checked }));
-                                }}
-                              />
-                              <div>
-                                <div className="tool-item-title">{paper.title}</div>
-                                {paper.summary && <div className="muted">{paper.summary}</div>}
-                                {paper.url && <div className="muted">{paper.url}</div>}
-                                {paper.citeKey && <div className="muted">{t('cite')}: {paper.citeKey}</div>}
-                              </div>
-                              <button
-                                className="btn ghost small"
-                                onClick={() => {
-                                  if (paper.citeKey) {
-                                    insertAtCursor(`\\cite{${paper.citeKey}}`);
-                                    appendLog(setWebsearchLog, t('已插入: {{cite}}', { cite: paper.citeKey }));
-                                  }
-                                }}
-                              >
-                                {t('插入引用')}
-                              </button>
-                            </label>
-                          ))}
-                        </div>
-                        <div className="vision-result">
-                          <div className="muted">{t('逐条总结')}</div>
-                          <div className="tool-list">
-                            {websearchResults.map((paper) => (
-                              <div key={paper.id} className="tool-item summary-item">
-                                <div>
-                                  <div className="tool-item-title">{paper.title}</div>
-                                  {paper.citeKey && <div className="muted">{t('cite')}: {paper.citeKey}</div>}
-                                </div>
-                                <textarea
-                                  className="input"
-                                  value={websearchItemNotes[paper.id] ?? paper.summary ?? ''}
-                                  onChange={(event) =>
-                                    setWebsearchItemNotes((prev) => ({ ...prev, [paper.id]: event.target.value }))
-                                  }
-                                  rows={3}
-                                />
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      </>
-                    )}
-                    {websearchParagraph && (
-                      <div className="vision-result">
-                        <div className="muted">{t('综合总结')}</div>
-                        <textarea
-                          className="input"
-                          value={websearchParagraph}
-                          onChange={(event) => setWebsearchParagraph(event.target.value)}
-                          rows={6}
+                <PanelHeader title={t('Websearch')} side="right" onCollapse={() => setRightOpen(false)} collapseLabel={t('Collapse panel')} />
+                <div className="ed-panel-body">
+                  <div className="tools-body">
+                    <div className="tool-section">
+                      <div className="tool-title">{t('多点检索')}</div>
+                      <div className="field">
+                        <label>{t('Query')}</label>
+                        <input
+                          className="op-input"
+                          value={websearchQuery}
+                          onChange={(event) => setWebsearchQuery(event.target.value)}
+                          placeholder={t('例如: diffusion editing for safety')}
                         />
                       </div>
-                    )}
-                    <div className="field">
-                      <label>{t('Bib 文件')}</label>
-                      <div className="ios-select-wrapper">
-                        <button className="ios-select-trigger" onClick={() => setWsBibDropdownOpen(!wsBibDropdownOpen)}>
-                          <span>{websearchTargetBib || t('(新建/选择 Bib 文件)')}</span>
-                          <svg width="12" height="12" viewBox="0 0 12 12" fill="none" className={wsBibDropdownOpen ? 'rotate' : ''}><path d="M3 5L6 8L9 5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                      <div className="row">
+                        <button className="op-btn op-btn-primary" onClick={runWebsearch} disabled={websearchBusy}>
+                          {websearchBusy ? t('检索中...') : t('开始检索')}
                         </button>
-                        {wsBibDropdownOpen && (
-                          <div className="ios-dropdown dropdown-down">
-                            <div className={`ios-dropdown-item ${!websearchTargetBib ? 'active' : ''}`} onClick={() => { setWebsearchTargetBib(''); setWsBibDropdownOpen(false); }}>
-                              {t('(新建/选择 Bib 文件)')}
-                              {!websearchTargetBib && <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M3 8L6.5 11.5L13 5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>}
+                      </div>
+                      <div className="websearch-log">
+                        {websearchLog.length === 0 ? (
+                          <div className="muted">{t('等待查询...')}</div>
+                        ) : (
+                          websearchLog.map((line, idx) => (
+                            <div key={idx} className="websearch-line">{line}</div>
+                          ))
+                        )}
+                      </div>
+                      {websearchResults.length > 0 && (
+                        <>
+                          <div className="row">
+                            <label className="checkbox-row">
+                              <input
+                                type="checkbox"
+                                checked={websearchSelectedAll}
+                                onChange={(event) => {
+                                  const checked = event.target.checked;
+                                  setWebsearchSelectedAll(checked);
+                                  const next: Record<string, boolean> = {};
+                                  websearchResults.forEach((item) => {
+                                    next[item.id] = checked;
+                                  });
+                                  setWebsearchSelected(next);
+                                }}
+                              />
+                              {t('全选')}
+                            </label>
+                            <button
+                              className="op-btn op-btn-ghost op-btn-sm"
+                              onClick={() => {
+                                const keys = websearchResults
+                                  .filter((item) => websearchSelected[item.id])
+                                  .map((item) => item.citeKey)
+                                  .filter(Boolean);
+                                if (keys.length > 0) {
+                                  insertAtCursor(`\\cite{${keys.join(',')}}`);
+                                  appendLog(setWebsearchLog, t('已插入选中引用到光标。'));
+                                }
+                              }}
+                            >
+                              {t('插入选中引用')}
+                            </button>
+                          </div>
+                          <div className="tool-list">
+                            {websearchResults.map((paper) => (
+                              <label key={paper.id} className="tool-item">
+                                <input
+                                  type="checkbox"
+                                  checked={Boolean(websearchSelected[paper.id])}
+                                  onChange={(event) => {
+                                    const checked = event.target.checked;
+                                    setWebsearchSelected((prev) => ({ ...prev, [paper.id]: checked }));
+                                  }}
+                                />
+                                <div>
+                                  <div className="tool-item-title">{paper.title}</div>
+                                  {paper.summary && <div className="muted">{paper.summary}</div>}
+                                  {paper.url && <div className="muted">{paper.url}</div>}
+                                  {paper.citeKey && <div className="muted">{t('cite')}: {paper.citeKey}</div>}
+                                </div>
+                                <button
+                                  className="op-btn op-btn-ghost op-btn-sm"
+                                  onClick={() => {
+                                    if (paper.citeKey) {
+                                      insertAtCursor(`\\cite{${paper.citeKey}}`);
+                                      appendLog(setWebsearchLog, t('已插入: {{cite}}', { cite: paper.citeKey }));
+                                    }
+                                  }}
+                                >
+                                  {t('插入引用')}
+                                </button>
+                              </label>
+                            ))}
+                          </div>
+                          <div className="vision-result">
+                            <div className="muted">{t('逐条总结')}</div>
+                            <div className="tool-list">
+                              {websearchResults.map((paper) => (
+                                <div key={paper.id} className="tool-item summary-item">
+                                  <div>
+                                    <div className="tool-item-title">{paper.title}</div>
+                                    {paper.citeKey && <div className="muted">{t('cite')}: {paper.citeKey}</div>}
+                                  </div>
+                                  <textarea
+                                    className="op-input"
+                                    value={websearchItemNotes[paper.id] ?? paper.summary ?? ''}
+                                    onChange={(event) =>
+                                      setWebsearchItemNotes((prev) => ({ ...prev, [paper.id]: event.target.value }))
+                                    }
+                                    rows={3}
+                                  />
+                                </div>
+                              ))}
                             </div>
-                            {bibFiles.map((p) => (
-                              <div key={p} className={`ios-dropdown-item ${websearchTargetBib === p ? 'active' : ''}`} onClick={() => { setWebsearchTargetBib(p); setWsBibDropdownOpen(false); }}>
-                                {p}
-                                {websearchTargetBib === p && <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M3 8L6.5 11.5L13 5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>}
-                              </div>
-                            ))}
                           </div>
-                        )}
+                        </>
+                      )}
+                      {websearchParagraph && (
+                        <div className="vision-result">
+                          <div className="muted">{t('综合总结')}</div>
+                          <textarea
+                            className="op-input"
+                            value={websearchParagraph}
+                            onChange={(event) => setWebsearchParagraph(event.target.value)}
+                            rows={6}
+                          />
+                        </div>
+                      )}
+                      <div className="field">
+                        <label>{t('Bib 文件')}</label>
+                        <Select
+                          ariaLabel={t('Bib 文件')}
+                          value={websearchTargetBib}
+                          options={[{ value: '', label: t('(新建/选择 Bib 文件)') }, ...bibFiles.map((p) => ({ value: p, label: p }))]}
+                          onChange={(v) => setWebsearchTargetBib(v)}
+                        />
+                        <button className="op-btn op-btn-ghost op-btn-sm" onClick={async () => {
+                          const created = await createBibFile();
+                          if (created) setWebsearchTargetBib(created);
+                        }}>{t('新建 Bib')}</button>
                       </div>
-                      <button className="btn ghost small" onClick={async () => {
-                        const created = await createBibFile();
-                        if (created) setWebsearchTargetBib(created);
-                      }}>{t('新建 Bib')}</button>
-                    </div>
-                    <div className="field">
-                      <label>{t('插入目标 TeX')}</label>
-                      <div className="ios-select-wrapper">
-                        <button className="ios-select-trigger" onClick={() => { setWsTexDropdownOpen(!wsTexDropdownOpen); setWsBibDropdownOpen(false); }}>
-                          <span>{websearchTargetFile || '—'}</span>
-                          <svg width="12" height="12" viewBox="0 0 12 12" fill="none" className={wsTexDropdownOpen ? 'rotate' : ''}>
-                            <path d="M3 5L6 8L9 5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
-                          </svg>
+                      <div className="field">
+                        <label>{t('插入目标 TeX')}</label>
+                        <Select
+                          ariaLabel={t('插入目标 TeX')}
+                          value={websearchTargetFile}
+                          placeholder="—"
+                          options={texFiles.map((p) => ({ value: p, label: p }))}
+                          onChange={(v) => setWebsearchTargetFile(v)}
+                        />
+                      </div>
+                      <div className="row">
+                        <button className="op-btn op-btn-primary" onClick={applyWebsearchInsert} disabled={websearchBusy}>
+                          {t('一键写入 Bib + 插入总结')}
                         </button>
-                        {wsTexDropdownOpen && (
-                          <div className="ios-dropdown dropdown-down">
-                            {texFiles.map((p) => (
-                              <div key={p} className={`ios-dropdown-item ${websearchTargetFile === p ? 'active' : ''}`} onClick={() => { setWebsearchTargetFile(p); setWsTexDropdownOpen(false); }}>
-                                {p}
-                                {websearchTargetFile === p && (
-                                  <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M3 8L6.5 11.5L13 5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>
-                                )}
-                              </div>
-                            ))}
-                          </div>
-                        )}
                       </div>
-                    </div>
-                    <div className="row">
-                      <button className="btn" onClick={applyWebsearchInsert} disabled={websearchBusy}>
-                        {t('一键写入 Bib + 插入总结')}
-                      </button>
                     </div>
                   </div>
                 </div>
               </>
             ) : activeSidebar === 'plot' ? (
               <>
-                <div className="panel-header">
-                  <div>{t('绘图')}</div>
-                </div>
-                <div className="tools-body">
-                  <div className="tool-section">
-                    <div className="tool-title">{t('表格 → 图表')}</div>
-                    <div className="muted">{t('从选区表格生成图表（seaborn）')}</div>
-                    <div className="field">
-                      <label>{t('图表类型')}</label>
-                      <div className="ios-select-wrapper">
-                        <button className="ios-select-trigger" onClick={() => setPlotTypeDropdownOpen(!plotTypeDropdownOpen)}>
-                          <span>{{ bar: t('Bar'), line: t('Line'), heatmap: t('Heatmap') }[plotType]}</span>
-                          <svg width="12" height="12" viewBox="0 0 12 12" fill="none" className={plotTypeDropdownOpen ? 'rotate' : ''}>
-                            <path d="M3 5L6 8L9 5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
-                          </svg>
-                        </button>
-                        {plotTypeDropdownOpen && (
-                          <div className="ios-dropdown dropdown-down">
-                            {([['bar', t('Bar')], ['line', t('Line')], ['heatmap', t('Heatmap')]] as [string, string][]).map(([val, label]) => (
-                              <div key={val} className={`ios-dropdown-item ${plotType === val ? 'active' : ''}`} onClick={() => { setPlotType(val as 'bar' | 'line' | 'heatmap'); setPlotTypeDropdownOpen(false); }}>
-                                {label}
-                                {plotType === val && (
-                                  <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M3 8L6.5 11.5L13 5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>
-                                )}
-                              </div>
-                            ))}
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                    <div className="field">
-                      <label>{t('标题 (可选)')}</label>
-                      <input
-                        className="input"
-                        value={plotTitle}
-                        onChange={(event) => setPlotTitle(event.target.value)}
-                        placeholder={t('Chart title')}
-                      />
-                    </div>
-                    <div className="field">
-                      <label>{t('文件名 (可选)')}</label>
-                      <input
-                        className="input"
-                        value={plotFilename}
-                        onChange={(event) => setPlotFilename(event.target.value)}
-                        placeholder="plot.png"
-                      />
-                    </div>
-                    <div className="field">
-                      <label>{t('补充提示 (可选)')}</label>
-                      <textarea
-                        className="input"
-                        value={plotPrompt}
-                        onChange={(event) => setPlotPrompt(event.target.value)}
-                        placeholder={t('例如：使用折线图，突出 Method A；加上 legend；设置 y 轴为 Accuracy')}
-                        rows={2}
-                      />
-                    </div>
-                    <div className="field">
-                      <label>{t('Debug 重试次数')}</label>
-                      <input
-                        className="input"
-                        type="number"
-                        min={0}
-                        max={5}
-                        value={plotRetries}
-                        onChange={(event) => setPlotRetries(Math.max(0, Math.min(5, Number(event.target.value) || 0)))}
-                      />
-                    </div>
-                    <label className="checkbox-row">
-                      <input
-                        type="checkbox"
-                        checked={plotAutoInsert}
-                        onChange={(event) => setPlotAutoInsert(event.target.checked)}
-                      />
-                      {t('生成后插入 Figure')}
-                    </label>
-                    <div className="row">
-                      <button className="btn" onClick={handlePlotGenerate} disabled={plotBusy}>
-                        {plotBusy ? t('生成中...') : t('生成图表')}
-                      </button>
-                    </div>
-                    {plotStatus && <div className="muted">{plotStatus}</div>}
-                    {plotAssetPath && (
-                      <div className="vision-result">
-                        <div className="muted">{t('预览')}</div>
-                        <img
-                          src={`/api/projects/${projectId}/blob?path=${encodeURIComponent(plotAssetPath)}`}
-                          alt={plotAssetPath}
-                          style={{ width: '100%', borderRadius: '8px' }}
-                        />
-                        <div className="row">
-                          <button className="btn ghost" onClick={() => insertFigureSnippet(plotAssetPath)}>{t('插入图模板')}</button>
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                </div>
-              </>
-            ) : activeSidebar === 'review' ? (
-              <>
-                <div className="panel-header">
-                  <div>{t('Review')}</div>
-                </div>
-                <div className="tools-body">
-                  <div className="tool-section">
-                    <div className="tool-title">{t('质量检查')}</div>
-                    <div className="tool-desc">{t('AI 辅助检查论文质量，发现潜在问题')}</div>
-                    <div className="review-buttons">
-                      <button
-                        className="review-btn"
-                        onClick={async () => {
-                          if (reviewReportBusy) return;
-                          setReviewReportBusy(true);
-                          setReviewReport(t('生成中...'));
-                          setRightView('review');
-                          try {
-                            const res = await runAgent({
-                              task: 'peer_review',
-                              prompt: t('Read all .tex files in the project (start from the main file and any included sections). Use list_files and read_file tools to inspect content. Write a detailed reviewer-style report. Include: Summary, Strengths, Weaknesses, Questions, Missing Experiments, Writing/Clarity, Suggestions, Score (1-10), and Confidence. Output report text only; do not propose patches or code.'),
-                              selection: '',
-                              content: '',
-                              mode: 'tools',
-                              projectId,
-                              activePath,
-                              compileLog,
-                              llmConfig,
-                              interaction: 'agent',
-                              history: []
-                            });
-                            setReviewReport(res.reply || t('无结果'));
-                          } catch (err) {
-                            setReviewReport(t('生成失败: {{error}}', { error: String(err) }));
-                          } finally {
-                            setReviewReportBusy(false);
-                          }
-                        }}
-                      >
-                        <span className="review-btn-icon"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="8" y1="13" x2="16" y2="13"/><line x1="8" y1="17" x2="16" y2="17"/></svg></span>
-                        <span className="review-btn-label">{t('详细评审报告')}</span>
-                        <span className="review-btn-desc">{t('阅读项目并输出完整审稿意见')}</span>
-                      </button>
-                      <button
-                        className="review-btn"
-                        onClick={async () => {
-                          const res = await runAgent({
-                            task: 'consistency_check',
-                            prompt: `Read all .tex files in the project using list_files and read_file tools. Perform a thorough consistency check across the entire paper. Check the following dimensions:
-
-1. **Terminology consistency**: Identify terms that refer to the same concept but use different wording (e.g., "feature extraction" vs "feature engineering", "model" vs "network" vs "architecture" used interchangeably).
-
-2. **Notation consistency**: Check if mathematical symbols and notation are used consistently (e.g., bold for vectors vs non-bold, x vs X for the same variable, inconsistent subscript/superscript conventions).
-
-3. **Data and results consistency**: Verify that numbers, statistics, and experimental results mentioned in the abstract, introduction, method, and conclusion sections are consistent with those in tables and figures.
-
-4. **Logic and claim consistency**: Check if claims made in the introduction/conclusion are actually supported by the experiments. Flag contradictions between sections.
-
-5. **Reference consistency**: Check for undefined abbreviations, references to figures/tables/sections that don't exist, or mislabeled cross-references.
-
-6. **Tense and style consistency**: Flag inconsistent use of tense (e.g., mixing past and present when describing experiments) or perspective (e.g., "we" vs "the authors" vs passive voice).
-
-For each issue found, report in this format:
-
----
-**[Category]** Terminology / Notation / Data / Logic / Reference / Style
-**[Location]** file and approximate line or section
-**[Issue]** Describe the inconsistency
-**[Suggestion]** How to fix it
----
-
-Here are examples of good findings:
-
-Example 1:
-**[Terminology]**
-**[Location]** sections/method.tex, Section 3.1 vs sections/experiments.tex, Section 4
-**[Issue]** The method section calls the module "Spatial Attention Block" but the experiments section refers to it as "Spatial Attention Module".
-**[Suggestion]** Unify to one term throughout the paper, e.g., "Spatial Attention Module".
-
-Example 2:
-**[Data]**
-**[Location]** sections/abstract.tex vs sections/experiments.tex, Table 2
-**[Issue]** The abstract claims "93.2% accuracy on CIFAR-10" but Table 2 reports 92.8%.
-**[Suggestion]** Update the abstract to match the actual result in Table 2.
-
-Example 3:
-**[Logic]**
-**[Location]** sections/introduction.tex, paragraph 3 vs sections/conclusion.tex, paragraph 1
-**[Issue]** The introduction states the method "does not require pre-training" but the conclusion mentions "after pre-training on ImageNet".
-**[Suggestion]** Clarify whether pre-training is used and make both sections consistent.
-
-Example 4:
-**[Notation]**
-**[Location]** sections/method.tex, Eq. (3) vs Eq. (7)
-**[Issue]** Eq. (3) uses bold lowercase h for hidden states, but Eq. (7) uses non-bold italic h for the same variable.
-**[Suggestion]** Use bold h consistently for hidden state vectors.
-
-Be thorough. Read ALL .tex files before reporting. Group findings by category. If no issues are found in a category, state that explicitly.`,
-                            selection: '',
-                            content: '',
-                            mode: 'tools',
-                            projectId,
-                            activePath,
-                            compileLog,
-                            llmConfig,
-                            interaction: 'agent',
-                            history: []
-                          });
-                          setReviewNotes((prev) => [{ title: t('一致性检查'), content: res.reply || t('无结果') }, ...prev]);
-                          if (res.patches && res.patches.length > 0) {
-                            const nextPending = res.patches.map((patch) => ({
-                              filePath: patch.path,
-                              original: files[patch.path] ?? '',
-                              proposed: patch.content,
-                              diff: patch.diff
-                            }));
-                            setPendingChanges(nextPending);
-                            setRightView('diff');
-                          }
-                        }}
-                      >
-                        <span className="review-btn-icon"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg></span>
-                        <span className="review-btn-label">{t('一致性检查')}</span>
-                        <span className="review-btn-desc">{t('检查术语、符号一致性')}</span>
-                      </button>
-                      <button
-                        className="review-btn"
-                        onClick={async () => {
-                          const res = await runAgent({
-                            task: 'missing_citations',
-                            prompt: t('Find claims that likely need citations and list them.'),
-                            selection: '',
-                            content: '',
-                            mode: 'tools',
-                            projectId,
-                            activePath,
-                            compileLog,
-                            llmConfig,
-                            interaction: 'agent',
-                            history: []
-                          });
-                          setReviewNotes((prev) => [{ title: t('引用缺失'), content: res.reply || t('无结果') }, ...prev]);
-                        }}
-                      >
-                        <span className="review-btn-icon"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg></span>
-                        <span className="review-btn-label">{t('引用缺失')}</span>
-                        <span className="review-btn-desc">{t('查找需要引用的论述')}</span>
-                      </button>
-                      <button
-                        className="review-btn"
-                        onClick={async () => {
-                          const res = await runAgent({
-                            task: 'compile_summary',
-                            prompt: t('Summarize compile log errors and suggested fixes.'),
-                            selection: compileLog,
-                            content: '',
-                            mode: 'direct',
-                            projectId,
-                            activePath,
-                            compileLog,
-                            llmConfig,
-                            interaction: 'agent',
-                            history: []
-                          });
-                          setReviewNotes((prev) => [{ title: t('编译日志总结'), content: res.reply || t('无结果') }, ...prev]);
-                        }}
-                      >
-                        <span className="review-btn-icon"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg></span>
-                        <span className="review-btn-label">{t('编译日志总结')}</span>
-                        <span className="review-btn-desc">{t('总结错误并给出修复建议')}</span>
-                      </button>
-                    </div>
-                  </div>
-                  {reviewNotes.length > 0 && (
+                <PanelHeader title={t('绘图')} side="right" onCollapse={() => setRightOpen(false)} collapseLabel={t('Collapse panel')} />
+                <div className="ed-panel-body">
+                  <div className="tools-body">
                     <div className="tool-section">
-                      <div className="tool-title">{t('结果')}</div>
-                      {reviewNotes.map((note, idx) => (
-                        <div key={`${note.title}-${idx}`} className="review-item">
-                          <div className="review-title">{note.title}</div>
-                          <div className="review-content markdown-body">
-                            <ReactMarkdown remarkPlugins={[remarkGfm]}>{note.content}</ReactMarkdown>
+                      <div className="tool-title">{t('表格 → 图表')}</div>
+                      <div className="muted">{t('从选区表格生成图表（seaborn）')}</div>
+                      <div className="field">
+                        <label>{t('图表类型')}</label>
+                        <Select
+                          ariaLabel={t('图表类型')}
+                          value={plotType}
+                          options={[
+                            { value: 'bar', label: t('Bar') },
+                            { value: 'line', label: t('Line') },
+                            { value: 'heatmap', label: t('Heatmap') }
+                          ]}
+                          onChange={(v) => setPlotType(v)}
+                        />
+                      </div>
+                      <div className="field">
+                        <label>{t('标题 (可选)')}</label>
+                        <input
+                          className="op-input"
+                          value={plotTitle}
+                          onChange={(event) => setPlotTitle(event.target.value)}
+                          placeholder={t('Chart title')}
+                        />
+                      </div>
+                      <div className="field">
+                        <label>{t('文件名 (可选)')}</label>
+                        <input
+                          className="op-input"
+                          value={plotFilename}
+                          onChange={(event) => setPlotFilename(event.target.value)}
+                          placeholder="plot.png"
+                        />
+                      </div>
+                      <div className="field">
+                        <label>{t('补充提示 (可选)')}</label>
+                        <textarea
+                          className="op-input"
+                          value={plotPrompt}
+                          onChange={(event) => setPlotPrompt(event.target.value)}
+                          placeholder={t('例如：使用折线图，突出 Method A；加上 legend；设置 y 轴为 Accuracy')}
+                          rows={2}
+                        />
+                      </div>
+                      <div className="field">
+                        <label>{t('Debug 重试次数')}</label>
+                        <input
+                          className="op-input"
+                          type="number"
+                          min={0}
+                          max={5}
+                          value={plotRetries}
+                          onChange={(event) => setPlotRetries(Math.max(0, Math.min(5, Number(event.target.value) || 0)))}
+                        />
+                      </div>
+                      <label className="checkbox-row">
+                        <input
+                          type="checkbox"
+                          checked={plotAutoInsert}
+                          onChange={(event) => setPlotAutoInsert(event.target.checked)}
+                        />
+                        {t('生成后插入 Figure')}
+                      </label>
+                      <div className="row">
+                        <button className="op-btn op-btn-primary" onClick={handlePlotGenerate} disabled={plotBusy}>
+                          {plotBusy ? t('生成中...') : t('生成图表')}
+                        </button>
+                      </div>
+                      {plotStatus && <div className="muted">{plotStatus}</div>}
+                      {plotAssetPath && (
+                        <div className="vision-result">
+                          <div className="muted">{t('预览')}</div>
+                          <img
+                            src={blobUrl(projectId, plotAssetPath)}
+                            alt={plotAssetPath}
+                            style={{ width: '100%', borderRadius: '8px' }}
+                          />
+                          <div className="row">
+                            <button className="op-btn op-btn-secondary op-btn-sm" onClick={() => insertFigureSnippet(plotAssetPath)}>{t('插入图模板')}</button>
                           </div>
                         </div>
-                      ))}
+                      )}
                     </div>
-                  )}
+                  </div>
                 </div>
               </>
-            ) : null}
+            ) : (
+              <>
+                <PanelHeader title={t('Review')} side="right" onCollapse={() => setRightOpen(false)} collapseLabel={t('Collapse panel')} />
+                <div className="ed-panel-body">
+                                  <div className="tools-body">
+                                    <div className="tool-section">
+                                      <div className="tool-title">{t('质量检查')}</div>
+                                      <div className="tool-desc">{t('AI 辅助检查论文质量，发现潜在问题')}</div>
+                                      <div className="review-buttons">
+                                        <button
+                                          type="button" className="review-btn"
+                                          onClick={async () => {
+                                            if (reviewReportBusy) return;
+                                            setReviewReportBusy(true);
+                                            setReviewReport(t('生成中...'));
+                                            setRightView('review');
+                                            try {
+                                              const res = await runAgent({
+                                                task: 'peer_review',
+                                                prompt: t('Read all .tex files in the project (start from the main file and any included sections). Use list_files and read_file tools to inspect content. Write a detailed reviewer-style report. Include: Summary, Strengths, Weaknesses, Questions, Missing Experiments, Writing/Clarity, Suggestions, Score (1-10), and Confidence. Output report text only; do not propose patches or code.'),
+                                                selection: '',
+                                                content: '',
+                                                mode: 'tools',
+                                                projectId,
+                                                activePath,
+                                                compileLog,
+                                                llmConfig,
+                                                interaction: 'agent',
+                                                history: []
+                                              });
+                                              setReviewReport(res.reply || t('无结果'));
+                                            } catch (err) {
+                                              setReviewReport(t('生成失败: {{error}}', { error: String(err) }));
+                                            } finally {
+                                              setReviewReportBusy(false);
+                                            }
+                                          }}
+                                        >
+                                          <span className="review-btn-icon"><Icon name="file-text" size={20} /></span>
+                                          <span className="review-btn-label">{t('详细评审报告')}</span>
+                                          <span className="review-btn-desc">{t('阅读项目并输出完整审稿意见')}</span>
+                                        </button>
+                                        <button
+                                          type="button" className="review-btn"
+                                          onClick={async () => {
+                                            const res = await runAgent({
+                                              task: 'consistency_check',
+                                              prompt: `Read all .tex files in the project using list_files and read_file tools. Perform a thorough consistency check across the entire paper. Check the following dimensions:
+
+                  1. **Terminology consistency**: Identify terms that refer to the same concept but use different wording (e.g., "feature extraction" vs "feature engineering", "model" vs "network" vs "architecture" used interchangeably).
+
+                  2. **Notation consistency**: Check if mathematical symbols and notation are used consistently (e.g., bold for vectors vs non-bold, x vs X for the same variable, inconsistent subscript/superscript conventions).
+
+                  3. **Data and results consistency**: Verify that numbers, statistics, and experimental results mentioned in the abstract, introduction, method, and conclusion sections are consistent with those in tables and figures.
+
+                  4. **Logic and claim consistency**: Check if claims made in the introduction/conclusion are actually supported by the experiments. Flag contradictions between sections.
+
+                  5. **Reference consistency**: Check for undefined abbreviations, references to figures/tables/sections that don't exist, or mislabeled cross-references.
+
+                  6. **Tense and style consistency**: Flag inconsistent use of tense (e.g., mixing past and present when describing experiments) or perspective (e.g., "we" vs "the authors" vs passive voice).
+
+                  For each issue found, report in this format:
+
+                  ---
+                  **[Category]** Terminology / Notation / Data / Logic / Reference / Style
+                  **[Location]** file and approximate line or section
+                  **[Issue]** Describe the inconsistency
+                  **[Suggestion]** How to fix it
+                  ---
+
+                  Here are examples of good findings:
+
+                  Example 1:
+                  **[Terminology]**
+                  **[Location]** sections/method.tex, Section 3.1 vs sections/experiments.tex, Section 4
+                  **[Issue]** The method section calls the module "Spatial Attention Block" but the experiments section refers to it as "Spatial Attention Module".
+                  **[Suggestion]** Unify to one term throughout the paper, e.g., "Spatial Attention Module".
+
+                  Example 2:
+                  **[Data]**
+                  **[Location]** sections/abstract.tex vs sections/experiments.tex, Table 2
+                  **[Issue]** The abstract claims "93.2% accuracy on CIFAR-10" but Table 2 reports 92.8%.
+                  **[Suggestion]** Update the abstract to match the actual result in Table 2.
+
+                  Example 3:
+                  **[Logic]**
+                  **[Location]** sections/introduction.tex, paragraph 3 vs sections/conclusion.tex, paragraph 1
+                  **[Issue]** The introduction states the method "does not require pre-training" but the conclusion mentions "after pre-training on ImageNet".
+                  **[Suggestion]** Clarify whether pre-training is used and make both sections consistent.
+
+                  Example 4:
+                  **[Notation]**
+                  **[Location]** sections/method.tex, Eq. (3) vs Eq. (7)
+                  **[Issue]** Eq. (3) uses bold lowercase h for hidden states, but Eq. (7) uses non-bold italic h for the same variable.
+                  **[Suggestion]** Use bold h consistently for hidden state vectors.
+
+                  Be thorough. Read ALL .tex files before reporting. Group findings by category. If no issues are found in a category, state that explicitly.`,
+                                              selection: '',
+                                              content: '',
+                                              mode: 'tools',
+                                              projectId,
+                                              activePath,
+                                              compileLog,
+                                              llmConfig,
+                                              interaction: 'agent',
+                                              history: []
+                                            });
+                                            setReviewNotes((prev) => [{ title: t('一致性检查'), content: res.reply || t('无结果') }, ...prev]);
+                                            if (res.patches && res.patches.length > 0) {
+                                              const nextPending = res.patches.map((patch) => ({
+                                                filePath: patch.path,
+                                                original: files[patch.path] ?? '',
+                                                proposed: patch.content,
+                                                diff: patch.diff
+                                              }));
+                                              setPendingChanges(nextPending);
+                                              setRightView('diff');
+                                            }
+                                          }}
+                                        >
+                                          <span className="review-btn-icon"><Icon name="check-circle" size={20} /></span>
+                                          <span className="review-btn-label">{t('一致性检查')}</span>
+                                          <span className="review-btn-desc">{t('检查术语、符号一致性')}</span>
+                                        </button>
+                                        <button
+                                          type="button" className="review-btn"
+                                          onClick={async () => {
+                                            const res = await runAgent({
+                                              task: 'missing_citations',
+                                              prompt: t('Find claims that likely need citations and list them.'),
+                                              selection: '',
+                                              content: '',
+                                              mode: 'tools',
+                                              projectId,
+                                              activePath,
+                                              compileLog,
+                                              llmConfig,
+                                              interaction: 'agent',
+                                              history: []
+                                            });
+                                            setReviewNotes((prev) => [{ title: t('引用缺失'), content: res.reply || t('无结果') }, ...prev]);
+                                          }}
+                                        >
+                                          <span className="review-btn-icon"><Icon name="book-open" size={20} /></span>
+                                          <span className="review-btn-label">{t('引用缺失')}</span>
+                                          <span className="review-btn-desc">{t('查找需要引用的论述')}</span>
+                                        </button>
+                                        <button
+                                          type="button" className="review-btn"
+                                          onClick={async () => {
+                                            const res = await runAgent({
+                                              task: 'compile_summary',
+                                              prompt: t('Summarize compile log errors and suggested fixes.'),
+                                              selection: compileLog,
+                                              content: '',
+                                              mode: 'direct',
+                                              projectId,
+                                              activePath,
+                                              compileLog,
+                                              llmConfig,
+                                              interaction: 'agent',
+                                              history: []
+                                            });
+                                            setReviewNotes((prev) => [{ title: t('编译日志总结'), content: res.reply || t('无结果') }, ...prev]);
+                                          }}
+                                        >
+                                          <span className="review-btn-icon"><Icon name="terminal" size={20} /></span>
+                                          <span className="review-btn-label">{t('编译日志总结')}</span>
+                                          <span className="review-btn-desc">{t('总结错误并给出修复建议')}</span>
+                                        </button>
+                                      </div>
+                                    </div>
+                                    {reviewNotes.length > 0 && (
+                                      <div className="tool-section">
+                                        <div className="tool-title">{t('结果')}</div>
+                                        {reviewNotes.map((note, idx) => (
+                                          <div key={`${note.title}-${idx}`} className="review-item">
+                                            <div className="review-title">{note.title}</div>
+                                            <div className="review-content markdown-body">
+                                              <ReactMarkdown remarkPlugins={[remarkGfm]}>{note.content}</ReactMarkdown>
+                                            </div>
+                                          </div>
+                                        ))}
+                                      </div>
+                                    )}
+                                  </div>
+                </div>
+              </>
+            )}
           </aside>
         )}
 
-        {sidebarOpen && (
+        <nav className="op-rail op-rail-right" aria-label={t('Right panel tools')}>
+          {RIGHT_TOOLS.map((tool) => (
+            <button
+              key={tool.id}
+              type="button"
+              className="op-rail-btn"
+              aria-pressed={rightOpen && activeSidebar === tool.id}
+              aria-label={tool.label}
+              data-tip={tool.label}
+              data-tip-pos="left"
+              onClick={() => toggleRightTool(tool.id)}
+            >
+              <Icon name={tool.icon} />
+              {tool.id === 'collab' && collabPeers.length > 0 && <span className="op-rail-dot ed-rail-dot-online" aria-hidden="true" />}
+            </button>
+          ))}
+          <div className="op-rail-spacer" />
+          <button
+            type="button"
+            className="op-rail-btn"
+            aria-label={t('Toggle right panel (Ctrl Alt B)')}
+            data-tip={t('Toggle panel · Ctrl Alt B')}
+            data-tip-pos="left"
+            onClick={() => setRightOpen((prev) => !prev)}
+          >
+            <Icon name="panel-right" />
+          </button>
+        </nav>
+
+        {overlayOpen && (
           <div
-            className="drag-handle vertical sidebar-handle"
-            onMouseDown={(e) => startColumnDrag('left', e)}
+            className="ed-scrim"
+            onClick={() => {
+              if (narrowLeft) setLeftOpen(false);
+              if (narrowRight) setRightOpen(false);
+            }}
           />
         )}
-
-        <section className="panel editor-panel">
-          <div className="panel-header">{t('Editor')}</div>
-          <div className="breadcrumb-bar">
-            <span className="breadcrumb-item">{projectName || t('Project')}</span>
-            {breadcrumbParts.map((part, idx) => (
-              <span key={`${part}-${idx}`} className="breadcrumb-item">{part}</span>
-            ))}
-            {currentHeading && (
-              <span className="breadcrumb-item heading">{currentHeading.title}</span>
-            )}
-          </div>
-          <div className="editor-toolbar">
-            <div className="toolbar-group">
-              <button className="toolbar-btn" onClick={insertSectionSnippet}>{t('Section')}</button>
-              <button className="toolbar-btn" onClick={insertSubsectionSnippet}>{t('Subsection')}</button>
-              <button className="toolbar-btn" onClick={insertSubsubsectionSnippet}>{t('Subsubsection')}</button>
-            </div>
-            <div className="toolbar-divider" />
-            <div className="toolbar-group">
-              <button className="toolbar-btn" onClick={insertItemizeSnippet}>{t('Itemize')}</button>
-              <button className="toolbar-btn" onClick={insertEnumerateSnippet}>{t('Enumerate')}</button>
-              <button className="toolbar-btn" onClick={insertEquationSnippet}>{t('Equation')}</button>
-              <button className="toolbar-btn" onClick={insertAlgorithmSnippet}>{t('Algorithm')}</button>
-            </div>
-            <div className="toolbar-divider" />
-            <div className="toolbar-group">
-              <button className="toolbar-btn" onClick={insertFigureTemplate}>{t('Figure')}</button>
-              <button className="toolbar-btn" onClick={insertTableSnippet}>{t('Table')}</button>
-              <button className="toolbar-btn" onClick={insertListingSnippet}>{t('Listing')}</button>
-            </div>
-            <div className="toolbar-divider" />
-            <div className="toolbar-group">
-              <button className="toolbar-btn" onClick={insertCiteSnippet}>{t('Cite')}</button>
-              <button className="toolbar-btn" onClick={insertRefSnippet}>{t('Ref')}</button>
-              <button className="toolbar-btn" onClick={insertLabelSnippet}>{t('Label')}</button>
-            </div>
-            <div className="toolbar-spacer" />
-            <div className="toolbar-group font-size-group">
-              <button className="toolbar-btn icon-only" onClick={() => setEditorFontSize((s) => Math.max(8, s - 1))} title={t('放大')}>
-                <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M3 7h8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/></svg>
-              </button>
-              <span className="font-size-label">{editorFontSize}px</span>
-              <button className="toolbar-btn icon-only" onClick={() => setEditorFontSize((s) => Math.min(24, s + 1))} title={t('放大')}>
-                <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M7 3v8M3 7h8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/></svg>
-              </button>
-            </div>
-          </div>
-          <div
-            className="editor-split"
-            ref={editorSplitRef}
-          >
-            <div className="editor-area" ref={editorAreaRef}>
-              <div ref={editorHostRef} className="editor-host" style={{ '--editor-font-size': `${editorFontSize}px` } as React.CSSProperties} />
-              <div className="editor-hint muted">{t('快捷键: Option/Alt + / 或 Cmd/Ctrl + Space 补全；Cmd/Ctrl + / 注释；Cmd/Ctrl + F 搜索；Cmd/Ctrl + S 保存')}</div>
-              {(inlineSuggestionText || isSuggesting) && suggestionPos && (
-                <div
-                  className={`suggestion-popover ${isSuggesting && !inlineSuggestionText ? 'loading' : ''}`}
-                  style={{ left: suggestionPos.left, top: suggestionPos.top }}
-                >
-                  {isSuggesting && !inlineSuggestionText ? (
-                    <div className="suggestion-loading">
-                      <span className="spinner" />
-                      {t('AI 补全中...')}
-                    </div>
-                  ) : (
-                    <>
-                      <div className="suggestion-preview">{inlineSuggestionText}</div>
-                      <div className="row">
-                        <button className="btn" onClick={() => acceptSuggestionRef.current()}>{t('接受')}</button>
-                        <button className="btn ghost" onClick={() => clearSuggestionRef.current()}>{t('拒绝')}</button>
-                      </div>
-                    </>
-                  )}
-                </div>
-              )}
-            </div>
-          </div>
-        </section>
-
-        <div
-          className="drag-handle vertical main-handle"
-          onMouseDown={(e) => startColumnDrag('right', e)}
-        />
-
-        <section className="panel pdf-panel">
-          <div className="panel-header">
-            <div>{t('Preview')}</div>
-            <div className="header-controls">
-              <div className="ios-select-wrapper">
-                <button
-                  className="ios-select-trigger"
-                  onClick={() => setRightViewDropdownOpen(!rightViewDropdownOpen)}
-                >
-                  <span>{RIGHT_VIEW_OPTIONS(t).find((item) => item.value === rightView)?.label || 'PDF'}</span>
-                  <svg width="12" height="12" viewBox="0 0 12 12" fill="none" className={rightViewDropdownOpen ? 'rotate' : ''}>
-                    <path d="M3 5L6 8L9 5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
-                  </svg>
-                </button>
-                {rightViewDropdownOpen && (
-                  <div className="ios-dropdown dropdown-down">
-                    {RIGHT_VIEW_OPTIONS(t).map((item) => (
-                      <div
-                        key={item.value}
-                        className={`ios-dropdown-item ${rightView === item.value ? 'active' : ''}`}
-                        onClick={() => {
-                          setRightView(item.value as 'pdf' | 'figures' | 'diff' | 'log' | 'toc' | 'review');
-                          setRightViewDropdownOpen(false);
-                        }}
-                      >
-                        {item.label}
-                        {rightView === item.value && (
-                          <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-                            <path d="M3 8L6.5 11.5L13 5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-                          </svg>
-                        )}
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-            </div>
-          </div>
-          <div className="right-body">
-            <div className="view-content">
-              {rightView === 'pdf' && (
-                <>
-                  <div className="pdf-toolbar">
-                    <div className="toolbar-group">
-                      <button className="icon-btn" onClick={() => zoomPdf(-0.1)} disabled={!pdfUrl}>−</button>
-                      <div className="zoom-label">{pdfScaleLabel}</div>
-                      <button className="icon-btn" onClick={() => zoomPdf(0.1)} disabled={!pdfUrl}>＋</button>
-                      <button className="btn ghost small" onClick={() => setPdfFitWidth(true)} disabled={!pdfUrl}>{t('适合宽度')}</button>
-                      <button
-                        className="btn ghost small"
-                        onClick={() => {
-                          setPdfFitWidth(false);
-                          setPdfScale(1);
-                        }}
-                        disabled={!pdfUrl}
-                      >
-                        100%
-                      </button>
-                    </div>
-                    <div className="toolbar-group">
-                      <button className="btn ghost small" onClick={downloadPdf} disabled={!pdfUrl}>{t('下载 PDF')}</button>
-                      <button
-                        className={`btn ghost small ${pdfSpread ? 'active' : ''}`}
-                        onClick={() => setPdfSpread((prev) => !prev)}
-                        disabled={!pdfUrl}
-                      >
-                        {t('双页')}
-                      </button>
-                      <button
-                        className={`btn ghost small ${pdfAnnotateMode ? 'active' : ''}`}
-                        onClick={() => setPdfAnnotateMode((prev) => !prev)}
-                        disabled={!pdfUrl}
-                      >
-                        {t('注释')}
-                      </button>
-                    </div>
-                  </div>
-                  {pdfUrl ? (
-                    <PdfPreview
-                      pdfUrl={pdfUrl}
-                      scale={pdfScale}
-                      fitWidth={pdfFitWidth}
-                      spread={pdfSpread}
-                      onFitScale={handleFitScale}
-                      onOutline={handlePdfOutline}
-                      annotations={pdfAnnotations}
-                      annotateMode={pdfAnnotateMode}
-                      onAddAnnotation={addPdfAnnotation}
-                      containerRef={pdfContainerRef}
-                      onTextClick={(text) => {
-                        const view = cmViewRef.current;
-                        if (!view) return;
-                        const docText = view.state.doc.toString();
-                        const needle = text.replace(/\s+/g, ' ').trim();
-                        if (!needle) return;
-                        const idx = docText.indexOf(needle);
-                        if (idx >= 0) {
-                          view.dispatch({
-                            selection: { anchor: idx, head: idx + needle.length },
-                            scrollIntoView: true
-                          });
-                          view.focus();
-                        }
-                      }}
-                    />
-                  ) : (
-                    <div className="muted pdf-empty-message">{t('尚未生成 PDF')}</div>
-                  )}
-                  {pdfAnnotations.length > 0 && (
-                    <div className="pdf-annotations">
-                      <div className="muted">{t('注释')}</div>
-                      <div className="annotation-list">
-                        {pdfAnnotations.map((note) => (
-                          <div key={note.id} className="annotation-item">
-                            <button
-                              className="annotation-link"
-                              onClick={() => scrollToPdfPage(note.page)}
-                            >
-                              P{note.page}
-                            </button>
-                            <div className="annotation-text">{note.text}</div>
-                            <button
-                              className="annotation-remove"
-                              onClick={() =>
-                                setPdfAnnotations((prev) => prev.filter((item) => item.id !== note.id))
-                              }
-                            >
-                              ✕
-                            </button>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-                </>
-              )}
-              {rightView === 'toc' && (
-                <div className="toc-panel">
-                  <div className="toc-title">{t('目录')}</div>
-                  {pdfOutline.length === 0 ? (
-                    <div className="muted">{t('暂无目录信息。')}</div>
-                  ) : (
-                    <div className="toc-list">
-                      {pdfOutline.map((item, idx) => (
-                        <button
-                          key={`${item.title}-${idx}`}
-                          className={`toc-item level-${item.level}`}
-                          onClick={() => {
-                            if (item.page) {
-                              setRightView('pdf');
-                              scrollToPdfPage(item.page);
-                            }
-                          }}
-                        >
-                          <span className="toc-title-text">{item.title}</span>
-                          {item.page && <span className="toc-page">P{item.page}</span>}
-                        </button>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              )}
-              {rightView === 'figures' && (
-                <div className="figure-panel-v2">
-                  <div className="figure-topbar">
-                    <div className="ios-select-wrapper" style={{ flex: 1 }}>
-                      <button className="ios-select-trigger" onClick={() => setFigureDropdownOpen(!figureDropdownOpen)}>
-                        <span>{selectedFigure || t('选择图片进行预览。')}</span>
-                        <svg width="12" height="12" viewBox="0 0 12 12" fill="none" className={figureDropdownOpen ? 'rotate' : ''}>
-                          <path d="M3 5L6 8L9 5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
-                        </svg>
-                      </button>
-                      {figureDropdownOpen && (
-                        <div className="ios-dropdown dropdown-down">
-                          {figureFiles.map((item) => (
-                            <div key={item.path} className={`ios-dropdown-item ${selectedFigure === item.path ? 'active' : ''}`} onClick={() => { setSelectedFigure(item.path); setFigureDropdownOpen(false); }}>
-                              {item.path}
-                              {selectedFigure === item.path && (
-                                <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M3 8L6.5 11.5L13 5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>
-                              )}
-                            </div>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                    {selectedFigure && (
-                      <button
-                        className="figure-insert-btn"
-                        onClick={() => insertFigureSnippet(selectedFigure)}
-                      >
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 5v14"/><path d="M5 12h14"/></svg>
-                        {t('插入到光标')}
-                      </button>
-                    )}
-                  </div>
-                  <div className="figure-display">
-                    {selectedFigure ? (
-                      selectedFigure.toLowerCase().endsWith('.pdf') ? (
-                        <object data={`/api/projects/${projectId}/blob?path=${encodeURIComponent(selectedFigure)}`} type="application/pdf" />
-                      ) : (
-                        <img src={`/api/projects/${projectId}/blob?path=${encodeURIComponent(selectedFigure)}`} alt={selectedFigure} />
-                      )
-                    ) : (
-                      <div className="figure-empty">
-                        <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/></svg>
-                        <span>{t('选择图片进行预览。')}</span>
-                      </div>
-                    )}
-                  </div>
-                </div>
-              )}
-              {rightView === 'diff' && (
-                <div className="diff-panel">
-                  <div className="diff-title">{t('Diff Preview ({{count}})', { count: pendingGrouped.length })}</div>
-                  {pendingGrouped.length === 0 && <div className="muted">{t('暂无待确认修改。')}</div>}
-                  {pendingGrouped.map((change) => (
-                    (() => {
-                      const rows = buildSplitDiff(change.original, change.proposed);
-                      return (
-                        <div key={change.filePath} className="diff-item">
-                          <div className="diff-header">
-                            <div className="diff-path">{change.filePath}</div>
-                            <button className="btn ghost" onClick={() => setDiffFocus(change)}>{t('放大')}</button>
-                          </div>
-                          <SplitDiffView rows={rows} />
-                          <div className="row">
-                            <button className="btn" onClick={() => applyPending(change)}>{t('应用此修改')}</button>
-                            <button className="btn ghost" onClick={() => discardPending(change)}>{t('放弃')}</button>
-                          </div>
-                        </div>
-                      );
-                    })()
-                  ))}
-                  {pendingGrouped.length > 1 && (
-                    <div className="row">
-                      <button className="btn" onClick={() => applyPending()}>{t('应用全部')}</button>
-                      <button className="btn ghost" onClick={() => discardPending()}>{t('全部放弃')}</button>
-                    </div>
-                  )}
-                </div>
-              )}
-              {rightView === 'log' && (
-                <div className="log-panel">
-                  <div className="log-title">
-                    {t('Compile Log')}
-                    <button className="btn ghost log-action" onClick={diagnoseCompile} disabled={diagnoseBusy}>
-                      {diagnoseBusy ? (
-                        <span className="suggestion-loading">
-                          <span className="spinner" />
-                          {t('诊断中...')}
-                        </span>
-                      ) : (
-                        t('一键诊断')
-                      )}
-                    </button>
-                  </div>
-                  {compileErrors.length > 0 && (
-                    <div className="log-errors">
-                      {compileErrors.map((error, idx) => (
-                        <button
-                          key={`${error.message}-${idx}`}
-                          className="error-item"
-                          onClick={() => jumpToError(error)}
-                        >
-                          <span className="error-tag">!</span>
-                          <span className="error-text">{error.message}</span>
-                          {error.line && <span className="error-line">L{error.line}</span>}
-                        </button>
-                      ))}
-                    </div>
-                  )}
-                  <pre className="log-content">{compileLog || t('暂无编译日志')}</pre>
-                </div>
-              )}
-              {rightView === 'review' && (
-                <div className="log-panel">
-                  <div className="log-title">{t('评审报告')}</div>
-                  <div className="log-content markdown-body">
-                    {reviewReport ? (
-                      <ReactMarkdown remarkPlugins={[remarkGfm]}>{reviewReport}</ReactMarkdown>
-                    ) : (
-                      t('暂无评审报告')
-                    )}
-                  </div>
-                </div>
-              )}
-            </div>
-          </div>
-        </section>
       </main>
 
-      {/* Top-bar dropdown portals — rendered outside top-bar to escape backdrop-filter stacking context */}
-      {(mainFileDropdownOpen || engineDropdownOpen || langDropdownOpen) && (
-        <div className="topbar-dropdown-backdrop" onClick={() => { setMainFileDropdownOpen(false); setEngineDropdownOpen(false); setLangDropdownOpen(false); }} />
-      )}
-      {mainFileDropdownOpen && topBarDropdownRect && (
-        <div className="ios-dropdown dropdown-fixed" style={{ top: topBarDropdownRect.top, left: topBarDropdownRect.left, minWidth: topBarDropdownRect.width }}>
-          {(texFiles.length > 0 ? texFiles : ['main.tex']).map((p) => (
-            <div key={p} className={`ios-dropdown-item ${mainFile === p ? 'active' : ''}`} onClick={() => { setMainFile(p); setMainFileDropdownOpen(false); }}>
-              {p}
-              {mainFile === p && <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M3 8L6.5 11.5L13 5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>}
-            </div>
-          ))}
-        </div>
-      )}
-      {engineDropdownOpen && topBarDropdownRect && (
-        <div className="ios-dropdown dropdown-fixed" style={{ top: topBarDropdownRect.top, left: topBarDropdownRect.left, minWidth: topBarDropdownRect.width }}>
-          {([['pdflatex','pdfLaTeX'],['xelatex','XeLaTeX'],['lualatex','LuaLaTeX'],['latexmk','Latexmk'],['tectonic','Tectonic']] as [string,string][]).map(([val, lbl]) => (
-            <div key={val} className={`ios-dropdown-item ${compileEngine === val ? 'active' : ''}`} onClick={() => { setSettings((prev) => ({ ...prev, compileEngine: val as CompileEngine })); setEngineDropdownOpen(false); }}>
-              {lbl}
-              {compileEngine === val && <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M3 8L6.5 11.5L13 5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>}
-            </div>
-          ))}
-        </div>
-      )}
-      {langDropdownOpen && topBarDropdownRect && (
-        <div className="ios-dropdown dropdown-fixed" style={{ top: topBarDropdownRect.top, left: topBarDropdownRect.left, minWidth: topBarDropdownRect.width }}>
-          {[['zh-CN', t('中文')], ['en-US', t('English')]].map(([val, lbl]) => (
-            <div key={val} className={`ios-dropdown-item ${i18n.language === val ? 'active' : ''}`} onClick={() => { i18n.changeLanguage(val); setLangDropdownOpen(false); }}>
-              {lbl}
-              {i18n.language === val && <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M3 8L6.5 11.5L13 5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>}
-            </div>
-          ))}
-        </div>
-      )}
+      <footer className="ed-statusbar">
+        <span className="op-truncate ed-status-text" aria-live="polite">{status}</span>
+        <div className="op-fill" />
+        <button
+          type="button"
+          className={`ed-save ${isSaving ? 'saving' : isDirty ? 'dirty' : 'saved'} ${savePulse ? 'pulse' : ''}`}
+          onClick={() => void saveActiveFile()}
+          aria-label={t('保存')}
+        >
+          <Icon name={isSaving ? 'loader' : isDirty ? 'pencil' : 'cloud-check'} className={isSaving ? 'op-spin' : ''} />
+          {isSaving ? t('保存中...') : isDirty ? t('未保存') : t('已保存')}
+        </button>
+        <span className="op-hide-sm">{ENGINE_LABELS[compileEngine] || compileEngine}</span>
+        <span className="op-hide-sm">{t('Engine')}: {engineName || t('未初始化')}</span>
+        <IconButton icon="panel-left" label={t('Toggle left panel (Ctrl B)')} aria-pressed={leftOpen} tipPos="bottom-end" onClick={() => setLeftOpen((prev) => !prev)} tip={false} />
+        <IconButton icon="panel-right" label={t('Toggle right panel (Ctrl Alt B)')} aria-pressed={rightOpen} onClick={() => setRightOpen((prev) => !prev)} tip={false} />
+      </footer>
 
       {fileContextMenu && (
-        <div className="ctx-menu-backdrop" onClick={() => setFileContextMenu(null)} onContextMenu={(e) => { e.preventDefault(); setFileContextMenu(null); }}>
-          <div className="ctx-menu" style={{ left: fileContextMenu.x, top: fileContextMenu.y }} onClick={(e) => e.stopPropagation()}>
-            <div className="ctx-menu-group">{t('创建')}</div>
-            <button className="ctx-menu-item" onClick={() => { beginInlineCreate('new-file'); setFileContextMenu(null); }}>{t('新建文件')}</button>
-            <button className="ctx-menu-item" onClick={() => { beginInlineCreate('new-folder'); setFileContextMenu(null); }}>{t('新建文件夹')}</button>
-            <button className="ctx-menu-item" onClick={() => { createBibFile(); setFileContextMenu(null); }}>{t('新建 Bib')}</button>
-            <div className="ctx-menu-sep" />
-            <div className="ctx-menu-group">{t('上传')}</div>
-            <button className="ctx-menu-item" onClick={() => { fileInputRef.current?.click(); setFileContextMenu(null); }}>{t('上传文件')}</button>
-            <button className="ctx-menu-item" onClick={() => { folderInputRef.current?.click(); setFileContextMenu(null); }}>{t('上传文件夹')}</button>
-            <div className="ctx-menu-sep" />
-            <button className="ctx-menu-item" onClick={() => { setAllFolders(true); setFileContextMenu(null); }}>{t('展开全部')}</button>
-            <button className="ctx-menu-item" onClick={() => { setAllFolders(false); setFileContextMenu(null); }}>{t('收起全部')}</button>
-            <button className="ctx-menu-item" onClick={() => { beginInlineRename(); setFileContextMenu(null); }}>{t('重命名')}</button>
-            <div className="ctx-menu-sep" />
-            <button className="ctx-menu-item ctx-menu-danger" onClick={() => { handleDeleteFile(); setFileContextMenu(null); }}>{t('删除')}</button>
-            <button className="ctx-menu-item" onClick={() => { refreshTree(); setFileContextMenu(null); }}>{t('刷新')}</button>
-          </div>
-        </div>
+        <Menu
+          point={fileContextMenu}
+          label={t('Files')}
+          onClose={() => setFileContextMenu(null)}
+          items={[
+            { type: 'label', label: t('创建') },
+            { label: t('新建文件'), icon: 'file-plus', onSelect: () => beginInlineCreate('new-file') },
+            { label: t('新建文件夹'), icon: 'folder-plus', onSelect: () => beginInlineCreate('new-folder') },
+            { label: t('新建 Bib'), icon: 'book', onSelect: () => void createBibFile() },
+            { type: 'sep' },
+            { type: 'label', label: t('上传') },
+            { label: t('上传文件'), icon: 'upload', onSelect: () => fileInputRef.current?.click() },
+            { label: t('上传文件夹'), icon: 'folder-up', onSelect: () => folderInputRef.current?.click() },
+            { type: 'sep' },
+            { label: t('展开全部'), icon: 'chevron-down', onSelect: () => setAllFolders(true) },
+            { label: t('收起全部'), icon: 'chevron-right', onSelect: () => setAllFolders(false) },
+            { label: t('重命名'), icon: 'pencil', onSelect: () => beginInlineRename() },
+            { label: t('刷新'), icon: 'refresh', onSelect: () => void refreshTree() },
+            { type: 'sep' },
+            { label: t('删除'), icon: 'trash', danger: true, onSelect: () => void handleDeleteFile() }
+          ]}
+        />
       )}
       {settingsOpen && (
-        <div className="modal-backdrop" onClick={() => setSettingsOpen(false)}>
-          <div className="modal" onClick={(event) => event.stopPropagation()}>
-            <div className="modal-header">
-              <div>{t('Workspace Settings')}</div>
-              <button className="icon-btn" onClick={() => setSettingsOpen(false)}>✕</button>
+        <Modal
+          title={t('AI & search settings')}
+          description={t('Model endpoints and keys are stored in this browser only.')}
+          size="lg"
+          closeLabel={t('关闭')}
+          onClose={() => setSettingsOpen(false)}
+          footer={
+            <>
+              <Button variant="ghost" onClick={() => setSettingsOpen(false)}>{t('关闭')}</Button>
+              <Button variant="primary" onClick={() => setSettingsOpen(false)}>{t('完成')}</Button>
+            </>
+          }
+        >
+          <div className="ed-settings">
+            <div className="field">
+              <label>{t('LLM Endpoint')}</label>
+              <input
+                className="op-input"
+                value={llmEndpoint}
+                onChange={(e) => setSettings((prev) => ({ ...prev, llmEndpoint: e.target.value }))}
+                placeholder="https://api.openai.com/v1/chat/completions"
+              />
+              <div className="muted">{t('支持 OpenAI 兼容的 base_url，例如 https://api.apiyi.com/v1')}</div>
             </div>
-            <div className="modal-body">
-              <div className="field">
-                <label>{t('LLM Endpoint')}</label>
-                <input
-                  className="input"
-                  value={llmEndpoint}
-                  onChange={(e) => setSettings((prev) => ({ ...prev, llmEndpoint: e.target.value }))}
-                  placeholder="https://api.openai.com/v1/chat/completions"
-                />
-                <div className="muted">{t('支持 OpenAI 兼容的 base_url，例如 https://api.apiyi.com/v1')}</div>
-              </div>
-              <div className="field">
-                <label>{t('LLM Model')}</label>
-                <input
-                  className="input"
-                  value={llmModel}
-                  onChange={(e) => setSettings((prev) => ({ ...prev, llmModel: e.target.value }))}
-                  placeholder="gpt-4o-mini"
-                />
-              </div>
-              <div className="field">
-                <label>{t('LLM API Key')}</label>
-                <input
-                  className="input"
-                  value={llmApiKey}
-                  onChange={(e) => setSettings((prev) => ({ ...prev, llmApiKey: e.target.value }))}
-                  placeholder="sk-..."
-                  type="password"
-                />
-                {!llmApiKey && (
-                  <div className="muted">{t('未配置 API Key 时将使用后端环境变量。')}</div>
-                )}
-              </div>
-              <div className="field">
-                <label>{t('Search LLM Endpoint (可选)')}</label>
-                <input
-                  className="input"
-                  value={searchEndpoint}
-                  onChange={(e) => setSettings((prev) => ({ ...prev, searchEndpoint: e.target.value }))}
-                  placeholder="https://api.apiyi.com/v1"
-                />
-                <div className="muted">{t('仅用于“检索/websearch”任务，留空则复用 LLM Endpoint。')}</div>
-              </div>
-              <div className="field">
-                <label>{t('Search LLM Model (可选)')}</label>
-                <input
-                  className="input"
-                  value={searchModel}
-                  onChange={(e) => setSettings((prev) => ({ ...prev, searchModel: e.target.value }))}
-                  placeholder="claude-sonnet-4-5-20250929-all"
-                />
-              </div>
-              <div className="field">
-                <label>{t('Search LLM API Key (可选)')}</label>
-                <input
-                  className="input"
-                  value={searchApiKey}
-                  onChange={(e) => setSettings((prev) => ({ ...prev, searchApiKey: e.target.value }))}
-                  placeholder="sk-..."
-                  type="password"
-                />
-              </div>
-              <div className="field">
-                <label>{t('VLM Endpoint (可选)')}</label>
-                <input
-                  className="input"
-                  value={visionEndpoint}
-                  onChange={(e) => setSettings((prev) => ({ ...prev, visionEndpoint: e.target.value }))}
-                  placeholder="https://api.apiyi.com/v1"
-                />
-                <div className="muted">{t('仅用于图像识别，留空则复用 LLM Endpoint。')}</div>
-              </div>
-              <div className="field">
-                <label>{t('VLM Model (可选)')}</label>
-                <input
-                  className="input"
-                  value={visionModel}
-                  onChange={(e) => setSettings((prev) => ({ ...prev, visionModel: e.target.value }))}
-                  placeholder="gpt-4o"
-                />
-              </div>
-              <div className="field">
-                <label>{t('VLM API Key (可选)')}</label>
-                <input
-                  className="input"
-                  value={visionApiKey}
-                  onChange={(e) => setSettings((prev) => ({ ...prev, visionApiKey: e.target.value }))}
-                  placeholder="sk-..."
-                  type="password"
-                />
-              </div>
+            <div className="field">
+              <label>{t('LLM Model')}</label>
+              <input
+                className="op-input"
+                value={llmModel}
+                onChange={(e) => setSettings((prev) => ({ ...prev, llmModel: e.target.value }))}
+                placeholder="gpt-4o-mini"
+              />
             </div>
-            <div className="modal-actions">
-              <button className="btn ghost" onClick={() => setSettingsOpen(false)}>{t('关闭')}</button>
-              <button className="btn" onClick={() => setSettingsOpen(false)}>{t('完成')}</button>
+            <div className="field">
+              <label>{t('LLM API Key')}</label>
+              <input
+                className="op-input"
+                value={llmApiKey}
+                onChange={(e) => setSettings((prev) => ({ ...prev, llmApiKey: e.target.value }))}
+                placeholder="sk-..."
+                type="password"
+              />
+              {!llmApiKey && (
+                <div className="muted">{t('未配置 API Key 时将使用后端环境变量。')}</div>
+              )}
+            </div>
+            <div className="field">
+              <label>{t('Search LLM Endpoint (可选)')}</label>
+              <input
+                className="op-input"
+                value={searchEndpoint}
+                onChange={(e) => setSettings((prev) => ({ ...prev, searchEndpoint: e.target.value }))}
+                placeholder="https://api.apiyi.com/v1"
+              />
+              <div className="muted">{t('仅用于“检索/websearch”任务，留空则复用 LLM Endpoint。')}</div>
+            </div>
+            <div className="field">
+              <label>{t('Search LLM Model (可选)')}</label>
+              <input
+                className="op-input"
+                value={searchModel}
+                onChange={(e) => setSettings((prev) => ({ ...prev, searchModel: e.target.value }))}
+                placeholder="claude-sonnet-4-5-20250929-all"
+              />
+            </div>
+            <div className="field">
+              <label>{t('Search LLM API Key (可选)')}</label>
+              <input
+                className="op-input"
+                value={searchApiKey}
+                onChange={(e) => setSettings((prev) => ({ ...prev, searchApiKey: e.target.value }))}
+                placeholder="sk-..."
+                type="password"
+              />
+            </div>
+            <div className="field">
+              <label>{t('VLM Endpoint (可选)')}</label>
+              <input
+                className="op-input"
+                value={visionEndpoint}
+                onChange={(e) => setSettings((prev) => ({ ...prev, visionEndpoint: e.target.value }))}
+                placeholder="https://api.apiyi.com/v1"
+              />
+              <div className="muted">{t('仅用于图像识别，留空则复用 LLM Endpoint。')}</div>
+            </div>
+            <div className="field">
+              <label>{t('VLM Model (可选)')}</label>
+              <input
+                className="op-input"
+                value={visionModel}
+                onChange={(e) => setSettings((prev) => ({ ...prev, visionModel: e.target.value }))}
+                placeholder="gpt-4o"
+              />
+            </div>
+            <div className="field">
+              <label>{t('VLM API Key (可选)')}</label>
+              <input
+                className="op-input"
+                value={visionApiKey}
+                onChange={(e) => setSettings((prev) => ({ ...prev, visionApiKey: e.target.value }))}
+                placeholder="sk-..."
+                type="password"
+              />
             </div>
           </div>
-        </div>
+        </Modal>
       )}
       {diffFocus && (
-        <div className="modal-backdrop" onClick={() => setDiffFocus(null)}>
-          <div className="modal diff-modal" onClick={(event) => event.stopPropagation()}>
-            <div className="modal-header">
-              <div>{t('Diff')} · {diffFocus.filePath}</div>
-              <button className="icon-btn" onClick={() => setDiffFocus(null)}>✕</button>
-            </div>
-            <div className="modal-body diff-modal-body">
-              <SplitDiffView rows={buildSplitDiff(diffFocus.original, diffFocus.proposed)} />
-            </div>
+        <Modal title={`${t('Diff')} · ${diffFocus.filePath}`} size="xl" closeLabel={t('关闭')} onClose={() => setDiffFocus(null)}>
+          <div className="diff-modal-body">
+            <SplitDiffView rows={buildSplitDiff(diffFocus.original, diffFocus.proposed)} />
           </div>
-        </div>
+        </Modal>
       )}
     </div>
   );

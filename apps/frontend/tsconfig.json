@@ -10,7 +10,11 @@
     "isolatedModules": true,
     "noEmit": true,
     "jsx": "react-jsx",
-    "strict": true
+    "strict": true,
+    "paths": {
+      "@design": ["../../design/index.ts"],
+      "@design/*": ["../../design/*"]
+    }
   },
-  "include": ["src"]
+  "include": ["src", "../../design"]
 }

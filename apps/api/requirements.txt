@@ -1,0 +1,12 @@
+Django==5.2.18
+djangorestframework==3.16.1
+djangorestframework-simplejwt==5.5.1
+psycopg[binary]==3.2.13
+boto3==1.43.121
+celery==5.5.3
+redis==5.3.1
+uvicorn[standard]==0.39.0
+httpx==0.28.1
+channels==4.3.2
+pycrdt==0.12.20
+daphne==4.1.2  # only imported by channels.testing (WebsocketCommunicator); uvicorn serves the app

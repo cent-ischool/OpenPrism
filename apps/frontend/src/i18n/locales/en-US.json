@@ -497,5 +497,16 @@
   "LLM API Endpoint": "LLM API Endpoint",
   "LLM API Key": "LLM API Key",
   "LLM Model": "LLM Model",
-  "展开": "Expand"
+  "展开": "Expand",
+  "输入 MinerU API Token...": "Enter MinerU API token...",
+  "加入失败: {{error}}": "Join failed: {{error}}",
+  "输入来源": "Input source",
+  "从当前项目编译": "Compile from current project",
+  "经典模式 (LaTeX→LaTeX)": "Classic mode (LaTeX→LaTeX)",
+  "选择 PDF 文件...": "Choose a PDF file...",
+  "删除失败": "Delete failed",
+  "请根据提供论文生成 3-5 句中文综合总结（不要分条）。可以使用 \\\\cite{...} 引用。只返回总结文本。": "Write a 3-5 sentence overall summary in English of the provided papers (no bullet points). You may use \\\\cite{...} to cite them. Return only the summary text.",
+  "上传 PDF": "Upload PDF",
+  "上传 PDF 文件": "Upload PDF file",
+  "转换模式": "Conversion mode"
 }
