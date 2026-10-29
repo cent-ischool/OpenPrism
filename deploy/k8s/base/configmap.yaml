@@ -1,0 +1,23 @@
+# Non-secret settings shared by the API and every worker. Overlays patch the host names and S3 location.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: openprism-config
+data:
+  DJANGO_DEBUG: "0"
+  DJANGO_ALLOWED_HOSTS: "openprism.example.com,api"   # overlay: your public host (+ "api" for in-cluster calls)
+  DJANGO_BEHIND_TLS_PROXY: "1"                        # the ingress terminates TLS and sets X-Forwarded-Proto
+  TRUSTED_PROXY_COUNT: "2"                            # ingress + the web nginx: rate limits key on the real client
+  ASGI_THREADS: "16"                                  # caps the API's sync thread pool (and so its DB connections per pod)
+  LOG_LEVEL: "INFO"
+  S3_ENDPOINT_URL: "http://garage:3900"               # overlay for managed S3
+  S3_PUBLIC_ENDPOINT_URL: "http://garage:3900"
+  S3_REGION: "garage"
+  S3_BUCKET: "openprism"
+  LLM_ALLOW_PRIVATE_ENDPOINTS: "0"                    # keep 0: user-supplied LLM/MinerU URLs must be public
+  OPENPRISM_MINERU_API_BASE: "https://mineru.net/api/v4"
+  OPENPRISM_COLLAB_FLUSH_DEBOUNCE_MS: "800"
+  OPENPRISM_COLLAB_TOKEN_TTL: "86400"
+  COMPILE_TIMEOUT_SECONDS: "120"
+  AI_WAIT_SECONDS: "300"
+  TEX_CACHE_DIR: "/tmp/openprism-tex-cache"

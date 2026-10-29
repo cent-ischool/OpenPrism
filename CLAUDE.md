@@ -8,7 +8,7 @@ OpenPrism is a local-first LaTeX + AI workspace for academic writing: a three-pa
 
 ## Status (read this first)
 
-OpenPrism has been moved from a single Node/Fastify process (no database; state on disk and in memory) to a cloud/Kubernetes-ready set of components: **React frontend + Django REST/Channels API + Celery workers + Postgres + Redis + Garage (S3)**. The Node backend is **gone** (`apps/backend` was deleted at cutover; it remains in git history before the Phase 7 commit). Done: data services, Django models/auth/files/templates, async compile, AI endpoints, template transfer, arXiv import, real-time collaboration, accounts + workspaces UI, and the production `web` image. **Remaining: Phase 8 — Kubernetes manifests in `deploy/k8s`** (Deployments per component, HPA on queue depth, ingress with websockets, secrets/config, probes, resource limits, NetworkPolicies including egress limits for the plot sandbox and the SSRF-sensitive workers, a one-off migrate Job).
+OpenPrism has been moved from a single Node/Fastify process (no database; state on disk and in memory) to a cloud/Kubernetes-ready set of components: **React frontend + Django REST/Channels API + Celery workers + Postgres + Redis + Garage (S3)**. The Node backend is **gone** (`apps/backend` was deleted at cutover; it remains in git history before the Phase 7 commit). Done: data services, Django models/auth/files/templates, async compile, AI endpoints, template transfer, arXiv import, real-time collaboration, accounts + workspaces UI, the production `web` image, and the Kubernetes manifests in `deploy/k8s` (Phase 8). **The Kubernetes manifests have been rendered and statically checked but never applied to a cluster** — see `deploy/k8s/README.md` ("Unverified") before trusting them.
 
 ## Running the project
 
@@ -113,6 +113,15 @@ Apps: `accounts` (email-login `User`, register/login/refresh/me), `projects` (`W
 
 **Gotchas.** `garage-init.sh` must run once before tests or presigned/binary features fail. Presigned URLs (currently unused by the UI) are signed for `S3_PUBLIC_ENDPOINT_URL`, so tests fetch them through the internal endpoint with the public `Host` header. `docker compose up` runs `migrate` on every api start (fine for dev; in k8s make it a one-off Job). New dependencies go in `apps/api/requirements.txt` as exact pins, then rebuild with `docker compose build api`.
 
+### Running untrusted code safely (compile and plot workers)
+
+Anyone who can edit a project — including an invite-link guest — controls the LaTeX that `worker-tex` compiles, and an LLM writes the Python that `worker-ai` runs for plots. These are the rules that keep that safe; every one is covered by a test that fails on the old code (`jobs/tests.py` `HostileDocumentTests`, `ScrubbedEnvironmentTests`; `ai/tests.py`):
+- **Child processes get an allow-listed environment, never a copy of the worker's.** `jobs.compile.run_command` *requires* an explicit `env`; `_tex_env()` builds it (PATH/locale only, `HOME` = the per-compile temp dir, `shell_escape=f`, `openout_any=p`, `openin_any=p`). The worker's environment holds the database and storage credentials, and a document can print anything its process can read (including `/proc/self/environ`).
+- **Worker processes are non-dumpable** (`config/hardening.py`, applied on `worker_init`/`worker_process_init` in `config/celery.py`), so the kernel refuses children access to `/proc/<ppid>/environ` and memory. This is what protects against LuaTeX's Lua `io.open` (unrestrictable: `--safer` breaks luaotfload) and against `plt.sys.modules['builtins'].open(...)` in plot code. Do not put credentials in *files* the worker's user can read for the same reason.
+- `openin_any=p` is applied to every engine **except `lualatex`** (luaotfload cannot run in paranoid mode). `latexmk` runs with `-norc` (a project `latexmkrc` is Perl code — this was a remote-code-execution hole) and `biber` with `--noconf`.
+- When adding any new subprocess that runs user-influenced code, scrub its environment, run it from a temp dir, bound its time/memory/file size, and add a test that a hostile input cannot read credentials.
+- Rate limits behind proxies: set `TRUSTED_PROXY_COUNT` to the number of proxies in front of the API (compose: 1, Kubernetes: 2), otherwise all users share the proxy's address and the login limit.
+
 ### Frontend
 
 **Layout (`apps/frontend/src`).**
@@ -146,6 +155,10 @@ The static reference for the target look lives in `design/reference/`: `design-s
 ### Templates (`templates/`)
 
 Built-in conference templates (ACL, CVPR, NeurIPS, ICML) registered in `templates/manifest.json` (id, label, mainFile, category, bilingual descriptions, tags). Users can upload custom templates as a ZIP via `POST /api/templates/upload`, which registers them into the same manifest. (In the Django API, templates are `Template` rows with files in Garage; `manage.py import_legacy` loads this directory into them, and `manifest.json` is no longer the source of truth there.)
+
+### Kubernetes (`deploy/k8s`)
+
+Kustomize: `base/` (api, web, worker-compile, worker-transfer, worker-ai, beat, migrate Job, PDBs, HPAs, ingress, default-deny NetworkPolicies), `overlays/local` (adds Postgres/Redis/Garage for a kind-style cluster), `overlays/production` (managed services, `CHANGE ME` placeholders), `components/keda` (queue-depth autoscaling). The compile/transfer/AI workers are separate Deployments of the same images with different `-Q` queues and shutdown grace periods above their task time limits (330 s / 1860 s / 960 s). `worker-compile` has no internet egress and no LLM credentials; `openprism-ai` is mounted only into `worker-transfer` and `worker-ai`. `README.md` there lists prerequisites (an enforcing CNI, ingress, metrics-server), the security model, operating notes (DB connection math, `podPidsLimit`) and what is still unverified.
 
 ### Devcontainer
 
