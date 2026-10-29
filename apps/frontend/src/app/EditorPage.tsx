@@ -1,12 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { CSSProperties, Dispatch, MouseEvent, SetStateAction, RefObject, DragEvent, KeyboardEvent as ReactKeyboardEvent } from 'react';
+import type { CSSProperties, Dispatch, MouseEvent, SetStateAction, RefObject, MutableRefObject, DragEvent, KeyboardEvent as ReactKeyboardEvent } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { basicSetup } from 'codemirror';
 import { latex } from '../latex/lang';
-import { Compartment, EditorState, StateEffect, StateField } from '@codemirror/state';
+import { Compartment, EditorState, Prec, StateEffect, StateField } from '@codemirror/state';
 import { Decoration, EditorView, DecorationSet, WidgetType, keymap, gutter, GutterMarker } from '@codemirror/view';
 import { search, searchKeymap } from '@codemirror/search';
 import { autocompletion, CompletionContext } from '@codemirror/autocomplete';
@@ -41,7 +41,7 @@ import {
   flushCollabFile,
   setCollabServer
 } from '../api/client';
-import type { ArxivPaper } from '../api/client';
+import type { ArxivPaper, PdfFocus } from '../api/client';
 import { tokenForUrl } from '../api/auth';
 import { createTwoFilesPatch, diffLines } from 'diff';
 import type { CompileOutcome } from '../latex/engine';
@@ -1113,7 +1113,9 @@ function PdfPreview({
   annotations,
   annotateMode,
   onAddAnnotation,
-  containerRef: externalRef
+  containerRef: externalRef,
+  focusRef,
+  scrollAtCompileRef
 }: {
   pdfUrl: string;
   scale: number;
@@ -1126,16 +1128,63 @@ function PdfPreview({
   annotateMode: boolean;
   onAddAnnotation?: (page: number, x: number, y: number) => void;
   containerRef?: RefObject<HTMLDivElement>;
+  /** Where to scroll once this PDF has rendered (set by a compile that knew the caret's position); cleared after use. */
+  focusRef?: MutableRefObject<PdfFocus | null>;
+  /** The scroll position when the compile started. If the reader has moved since, their position wins over the focus. */
+  scrollAtCompileRef?: MutableRefObject<number>;
 }) {
   const { t } = useTranslation();
   const localRef = useRef<HTMLDivElement | null>(null);
   const containerRef = externalRef || localRef;
+  /** The reader's last scroll position (and the content height it was measured against) while a finished PDF was showing. */
+  const lastView = useRef({ top: 0, height: 0 });
+  const viewSettled = useRef(false);
+
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+    const onScroll = () => {
+      if (viewSettled.current) lastView.current = { top: container.scrollTop, height: container.scrollHeight };
+    };
+    container.addEventListener('scroll', onScroll, { passive: true });
+    return () => container.removeEventListener('scroll', onScroll);
+  }, [containerRef]);
 
   useEffect(() => {
     const container = containerRef.current;
     if (!container || !pdfUrl) return;
     let cancelled = false;
+    // Re-rendering empties the container, which would throw the reader back to the top. Use the last position the
+    // reader had while a finished PDF was showing: by the time this body runs, the previous run's cleanup has already
+    // emptied the container, so reading it now would always give 0.
+    const previousTop = lastView.current.top;
+    const previousRatio = lastView.current.height > 0 ? previousTop / lastView.current.height : 0;
+    viewSettled.current = false;
     container.innerHTML = '';
+    container.style.paddingBottom = '';
+
+    /** After the pages are in the DOM: go to the compile's focus, or put the reader back where they were. */
+    const restorePosition = (pageScale: number) => {
+      const focus = focusRef?.current ?? null;
+      if (focusRef) focusRef.current = null;
+      const readerMoved = scrollAtCompileRef ? Math.abs(previousTop - scrollAtCompileRef.current) > 4 : false;
+      const visible = container.clientHeight > 0;
+      const wrapper = focus && container.querySelector<HTMLElement>(`.pdf-page[data-page-number="${focus.page}"]`);
+      if (focus && wrapper && visible && !readerMoved) {
+        const pageTop = wrapper.getBoundingClientRect().top - container.getBoundingClientRect().top + container.scrollTop;
+        // PDF points at scale 1 are CSS pixels, so y * scale is the offset into the page; leave some context above it.
+        const wanted = Math.max(0, pageTop + focus.y * pageScale - container.clientHeight * 0.3);
+        // Near the end of the document the position may lie beyond what can be scrolled to (the rest of the last page
+        // is often blank); add just enough room after the last page to reach it.
+        const reachable = container.scrollHeight - container.clientHeight;
+        if (wanted > reachable) container.style.paddingBottom = `${Math.ceil(wanted - reachable)}px`;
+        container.scrollTop = wanted;
+      } else if (previousRatio > 0) {
+        container.scrollTop = previousRatio * container.scrollHeight;
+      }
+      lastView.current = { top: container.scrollTop, height: container.scrollHeight };
+      viewSettled.current = true;
+    };
 
     const render = async () => {
       try {
@@ -1224,6 +1273,7 @@ function PdfPreview({
         } else {
           wrappers.forEach((wrapper) => container.appendChild(wrapper));
         }
+        restorePosition(baseScale);
 
         if (onOutline) {
           try {
@@ -1470,6 +1520,10 @@ export default function EditorPage() {
   const editorSplitRef = useRef<HTMLDivElement | null>(null);
   const centerRef = useRef<HTMLElement | null>(null);
   const pdfContainerRef = useRef<HTMLDivElement | null>(null);
+  /** Where the caret's source line landed in the newly compiled PDF; consumed once by PdfPreview when it renders. */
+  const pdfFocusRef = useRef<PdfFocus | null>(null);
+  /** The preview's scroll position when the compile started: if it has changed by the time the PDF arrives, the reader scrolled. */
+  const pdfScrollAtCompileRef = useRef(0);
   const fileTreeRef = useRef<HTMLDivElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const folderInputRef = useRef<HTMLInputElement | null>(null);
@@ -1826,7 +1880,10 @@ export default function EditorPage() {
         search(),
         autocompletion({ override: [latexCompletionSource] }),
         updateListener,
-        keymapExtension
+        keymapExtension,
+        // Ctrl/Cmd+Enter compiles. CodeMirror's default keymap (inside basicSetup, so ahead of keymapExtension) binds
+        // the same key to "insert blank line", which is why this one is Prec.highest and handles the key itself.
+        Prec.highest(keymap.of([{ key: 'Mod-Enter', run: () => { void compileRef.current(); return true; } }]))
       ]
     });
 
@@ -3348,6 +3405,9 @@ export default function EditorPage() {
 
   const compile = async () => {
     if (!projectId) return;
+    // Where the reader is right now, before any await: if the preview has moved by the time the PDF arrives, the
+    // reader scrolled it themselves and must not be pulled to the caret's position.
+    pdfScrollAtCompileRef.current = pdfContainerRef.current?.scrollTop ?? 0;
     setIsCompiling(true);
     setStatus(t('编译中...'));
     try {
@@ -3367,7 +3427,16 @@ export default function EditorPage() {
       if (!fileMap[mainFile]) {
         throw new Error(t('主文件不存在: {{file}}', { file: mainFile }));
       }
-      const res = await compileProject({ projectId, mainFile, engine: compileEngine }, (message) => setStatus(message));
+      // Compiling reads the saved project, so in a live session save it first: otherwise the last words typed are
+      // missing from the PDF and the caret's line number may no longer match what was compiled.
+      if (collabActiveRef.current && activePath) {
+        await flushCollabFile(projectId, activePath).catch(() => undefined);
+      }
+      const view = cmViewRef.current;
+      const focus = view && activePath && isTextPath(activePath)
+        ? { file: activePath, line: view.state.doc.lineAt(view.state.selection.main.head).number }
+        : undefined;
+      const res = await compileProject({ projectId, mainFile, engine: compileEngine, focus }, (message) => setStatus(message));
       if (!res.ok || !res.pdf) {
         const detail = [res.error, res.log].filter(Boolean).join('\n');
         throw new Error(detail || t('后端编译失败'));
@@ -3391,6 +3460,7 @@ export default function EditorPage() {
       if (pdfUrl) {
         URL.revokeObjectURL(pdfUrl);
       }
+      pdfFocusRef.current = res.focus ?? null; // read by PdfPreview when this PDF finishes rendering
       setPdfUrl(nextUrl);
       setRightView('pdf');
       setStatus(t('编译完成 ({{engine}})', { engine: result.engine }));
@@ -3832,6 +3902,7 @@ export default function EditorPage() {
         event.preventDefault();
         setLeftOpen((prev) => !prev);
       } else if (event.key === 'Enter') {
+        if (event.defaultPrevented) return; // the editor already handled it (and compiled)
         event.preventDefault();
         void compileRef.current();
       }
@@ -4494,6 +4565,8 @@ export default function EditorPage() {
                           annotateMode={pdfAnnotateMode}
                           onAddAnnotation={addPdfAnnotation}
                           containerRef={pdfContainerRef}
+                          focusRef={pdfFocusRef}
+                          scrollAtCompileRef={pdfScrollAtCompileRef}
                           onTextClick={(text) => {
                             const view = cmViewRef.current;
                             if (!view) return;

@@ -21,6 +21,18 @@ def fail(message, status=200):
     return Response({'ok': False, 'error': message}, status=status)
 
 
+def _clean_focus(raw):
+    """The optional caret position {file, line} sent with a compile. Best effort: anything malformed is ignored."""
+    if not isinstance(raw, dict):
+        return None
+    try:
+        line = int(raw.get('line'))
+        file = safe_path(raw.get('file'))
+    except (TypeError, ValueError, InvalidPath):
+        return None
+    return {'file': file, 'line': line} if 1 <= line <= 10_000_000 else None
+
+
 def get_job(request, job_id):
     job = get_object_or_404(Job.objects.select_related('project'), pk=job_id)
     if getattr(request.user, 'is_guest', False):
@@ -44,6 +56,7 @@ def job_json(job):
         out['result'] = {
             'log': r.get('log', ''), 'status': r.get('exitStatus'), 'engine': r.get('engine'), 'mainFile': r.get('mainFile'),
             'pdfUrl': f'/api/jobs/{job.id}/pdf' if r.get('pdfKey') else None,
+            'focus': r.get('focus'),  # {page, x, y} of the caret's source line in the PDF, when it could be found
         }
     if job.status not in ACTIVE and job.type != Job.COMPILE:
         out['result'] = job.result.get('body')  # the endpoint's response body; never contains secrets
@@ -74,8 +87,11 @@ def start_compile(request):
         if guest else Job.objects.filter(user=owner, type=Job.COMPILE, status__in=ACTIVE)
     if active.count() >= MAX_ACTIVE_COMPILES_PER_USER:
         return fail('Too many compilations in progress. Wait for one to finish.', 429)
-    job = Job.objects.create(type=Job.COMPILE, user=owner, project=project,
-                             params={'mainFile': main_file, 'engine': engine}, progress_log=['Queued'])
+    params = {'mainFile': main_file, 'engine': engine}
+    focus = _clean_focus(request.data.get('focus'))
+    if focus:
+        params['focus'] = focus
+    job = Job.objects.create(type=Job.COMPILE, user=owner, project=project, params=params, progress_log=['Queued'])
     compile_project.delay(str(job.id))
     return Response({'ok': True, 'jobId': str(job.id), 'status': job.status})
 
