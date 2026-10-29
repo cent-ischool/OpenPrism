@@ -31,6 +31,20 @@ cluster. Do a full run on a local `kind` cluster, then fix whatever breaks.
 - Whether `worker-compile` and `worker-ai` should run under a sandboxed runtime (`runtimeClassName: gvisor` or Kata).
 - Whether to add PgBouncer in front of Postgres (connection count grows with API replicas).
 
+## Bugs
+
+- [ ] **Ctrl+Enter in the editor moves down a line instead of compiling** (reported). Confirmed in part with an
+      automated browser run (Chromium, Linux-style Ctrl): with the caret in the document, Ctrl+Enter **inserts a blank
+      line** (36 → 37 lines) *and* sends a compile request. Cmd+Enter does not insert a line. What was not reproduced is
+      the compile appearing not to run, so that may be a feedback problem (the PDF/status not visibly updating) or
+      something specific to the reporter's setup (OS/keyboard layout, collaboration mode, focus); ask for details.
+      Likely cause: the compile shortcut is a **window-level** `keydown` listener in `EditorPage.tsx` (~line 3830), but
+      CodeMirror sees the key first and its default keymap binds Mod-Enter to *insert blank line*. The listener neither
+      checks whether the event was already handled nor stops CodeMirror from acting on it.
+      Fix: bind Mod-Enter inside the editor's own keymap (`keymap.of([...])` at ~line 1756) with the highest precedence,
+      calling compile and returning `true` so the default is suppressed; keep the window listener for when focus is
+      elsewhere. Add a browser test that Ctrl/Cmd+Enter compiles, adds no line, and works in collaborative mode too.
+
 ## Product gaps
 
 - [ ] **Template transfer: the layout check cannot finish from the UI** *(pre-existing)*. The backend supports the whole
