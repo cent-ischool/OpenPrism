@@ -176,13 +176,14 @@ JOB_RUNNING_STALE_MINUTES = int(env('JOB_RUNNING_STALE_MINUTES', '10'))
 JOB_QUEUED_STALE_MINUTES = int(env('JOB_QUEUED_STALE_MINUTES', '30'))
 JOB_RETENTION_HOURS = int(env('JOB_RETENTION_HOURS', '24'))
 
-S3_ENDPOINT_URL = env('S3_ENDPOINT_URL', 'http://localhost:3900')
+# The AWS_* names are what the deploy platform's object-storage Secret provides (boto3 / django-storages style).
+S3_ENDPOINT_URL = env('S3_ENDPOINT_URL', env('AWS_ENDPOINT_URL_S3', env('AWS_S3_ENDPOINT_URL', 'http://localhost:3900')))
 # URL embedded in presigned links; must be reachable by the browser, not just containers.
 S3_PUBLIC_ENDPOINT_URL = env('S3_PUBLIC_ENDPOINT_URL', S3_ENDPOINT_URL)
 S3_REGION = env('S3_REGION', 'garage')
 S3_BUCKET = env('S3_BUCKET', 'openprism')
-S3_ACCESS_KEY_ID = env('S3_ACCESS_KEY_ID', required=True)
-S3_SECRET_ACCESS_KEY = env('S3_SECRET_ACCESS_KEY', required=True)
+S3_ACCESS_KEY_ID = env('S3_ACCESS_KEY_ID', env('AWS_ACCESS_KEY_ID'), required=True)
+S3_SECRET_ACCESS_KEY = env('S3_SECRET_ACCESS_KEY', env('AWS_SECRET_ACCESS_KEY'), required=True)
 
 LOGGING = {
     'version': 1,
