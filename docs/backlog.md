@@ -33,38 +33,17 @@ cluster. Do a full run on a local `kind` cluster, then fix whatever breaks.
 
 ## Bugs
 
-- [ ] **Ctrl+Enter in the editor moves down a line instead of compiling** (reported). Confirmed in part with an
-      automated browser run (Chromium, Linux-style Ctrl): with the caret in the document, Ctrl+Enter **inserts a blank
-      line** (36 → 37 lines) *and* sends a compile request. Cmd+Enter does not insert a line. What was not reproduced is
-      the compile appearing not to run, so that may be a feedback problem (the PDF/status not visibly updating) or
-      something specific to the reporter's setup (OS/keyboard layout, collaboration mode, focus); ask for details.
-      Likely cause: the compile shortcut is a **window-level** `keydown` listener in `EditorPage.tsx` (~line 3830), but
-      CodeMirror sees the key first and its default keymap binds Mod-Enter to *insert blank line*. The listener neither
-      checks whether the event was already handled nor stops CodeMirror from acting on it.
-      Fix: bind Mod-Enter inside the editor's own keymap (`keymap.of([...])` at ~line 1756) with the highest precedence,
-      calling compile and returning `true` so the default is suppressed; keep the window listener for when focus is
-      elsewhere. Add a browser test that Ctrl/Cmd+Enter compiles, adds no line, and works in collaborative mode too.
-
-- [ ] **After recompiling, the PDF preview should jump to where the user is editing** (reported). If the caret is in
-      section X, the preview should show section X after the new PDF loads, not the top of the document or a stale
-      position. Not yet investigated in detail; notes for whoever picks it up:
-      - *Nothing maps source to PDF today.* No SyncTeX anywhere in the repo, and compiles do not pass `-synctex=1`. The
-        TeX worker image already ships the `synctex` binary. The preview is pdf.js in `EditorPage.tsx` and already has a
-        `scrollToPdfPage(page)` helper used by annotations and the outline.
-      - *Accurate approach: SyncTeX forward search.* Compile with `-synctex=1` (and keep `main.synctex.gz` next to the
-        PDF), then ask `synctex view -i line:column:file -o output.pdf` for the page and position of the caret's source
-        line. Things to handle: paths inside the file are the worker's temp directories, so they must be mapped back to
-        project paths; `\input`ed files and the active file may differ from the main file; compile output is returned
-        through the job API, so the SyncTeX data must be stored and served with the PDF (and cleaned up with it).
-        Treat the SyncTeX file as untrusted input from a user's document.
-      - *Cheaper fallback:* find the section heading the caret is under (the editor already parses the outline) and jump
-        to the matching heading via the PDF's own outline (needs `hyperref`) or by searching the text layer. Less exact,
-        and it breaks with starred sections, renamed headings or documents without hyperref.
-      - *At minimum*, keep the reader's current page/scroll and zoom across a recompile instead of resetting them.
-      - Decide what happens when the user has scrolled the preview themselves since compiling (do not yank them back),
-        and make it a setting. In collaboration each person's preview position is their own.
-      - Natural follow-up once SyncTeX data exists: click in the PDF to jump to the source line (reverse search).
-      - Test in a browser: place the caret in a late section, recompile, and assert the visible page contains it.
+- [ ] **New file, new folder and upload file do nothing in the editor's file panel** (reported). None of the three
+      toolbar actions (New file, New folder, Upload files) works. Not yet investigated, and it hasn't been
+      reproduced in a browser. What is known:
+      - The API side of all three is covered by backend tests: creating a folder, writing a file, and uploading
+        (including folders with relative paths). So the fault is more likely in the frontend or in how it calls the API.
+      - These client calls were changed during the migration (they now go through `apiFetch`, and `uploadFiles` no longer
+        sets its own headers), so check those first for regressions.
+      - The browser checks done so far covered sign-in, compile, invite links and live editing. They never clicked
+        these three buttons.
+      - Start by reproducing it with the network tab open and the browser console visible, to see whether a request
+        is sent at all, and what status it gets back. Then add a browser test for each action.
 
 ## Product gaps
 
@@ -200,8 +179,9 @@ cluster. Do a full run on a local `kind` cluster, then fix whatever breaks.
 
 ## Quality and tooling
 
-- [ ] **Commit the browser test suite.** The Playwright scenarios used to verify sign-in, workspaces, compile, invite
-      links and live two-browser editing lived in a scratch directory, not the repo. There is no JS test suite at all.
+- [ ] **Grow the browser test suite.** `apps/frontend/e2e` (Playwright, `npm run e2e`, against a running stack) now covers
+      the editor shortcut and the PDF preview. Still to add: sign-in and registration, workspaces and invitations, invite
+      links, two browsers editing live, and the file-panel actions. Then run it in CI.
 - [ ] **Seven pre-existing TypeScript errors** (`EditorPage.tsx` ×6 and `latex/lang.ts`: CodeMirror/Blob/event-listener
       typings). `tsc --noEmit` should be clean so it can gate CI.
 - [ ] **No CI.** Nothing runs the three test suites (API, TeX worker, AI worker), `tsc`, or a render of the Kubernetes

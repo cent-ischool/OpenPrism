@@ -10,3 +10,7 @@ data/
 AGENTS.md
 __pycache__/
 *.pyc
+
+# Playwright output
+test-results/
+playwright-report/

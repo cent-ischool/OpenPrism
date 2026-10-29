@@ -41,7 +41,8 @@ def compile_project(job_id):
     params = job.params
     try:
         out = tex.compile_project(
-            job.project, params['mainFile'], params['engine'], progress=lambda m: add_progress(job, m))
+            job.project, params['mainFile'], params['engine'], progress=lambda m: add_progress(job, m),
+            focus=params.get('focus'))
     except tex.CompileError as exc:
         return finish(job, Job.FAILED, str(exc))
     except SoftTimeLimitExceeded:
@@ -50,7 +51,8 @@ def compile_project(job_id):
         log.exception('compile job %s crashed', job_id)
         return finish(job, Job.FAILED, f'Compilation failed: {exc}')
 
-    result = {'log': out['log'], 'exitStatus': out['status'], 'engine': params['engine'], 'mainFile': params['mainFile']}
+    result = {'log': out['log'], 'exitStatus': out['status'], 'engine': params['engine'], 'mainFile': params['mainFile'],
+              'focus': out.get('focus')}
     if not out['pdf']:
         return finish(job, Job.FAILED, 'No PDF generated.', result)
     key = f'jobs/{job.id}/output.pdf'

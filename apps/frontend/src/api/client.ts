@@ -277,12 +277,19 @@ export function runAgent(payload: {
   });
 }
 
-type CompileResult = { ok: boolean; pdf?: string; log?: string; status?: number; engine?: string; error?: string };
+/** Where a source line landed in the compiled PDF: page number and position in points from the page's top-left. */
+export interface PdfFocus {
+  page: number;
+  x: number;
+  y: number;
+}
+
+type CompileResult = { ok: boolean; pdf?: string; log?: string; status?: number; engine?: string; error?: string; focus?: PdfFocus | null };
 type JobStatus = {
   status: 'queued' | 'running' | 'waiting_images' | 'success' | 'failed';
   progressLog: string[];
   error: string;
-  result?: { log: string; status: number | null; engine: string; mainFile: string; pdfUrl: string | null };
+  result?: { log: string; status: number | null; engine: string; mainFile: string; pdfUrl: string | null; focus?: PdfFocus | null };
 };
 
 const COMPILE_POLL_INTERVAL_MS = 1000;
@@ -307,6 +314,8 @@ export async function compileProject(
     projectId: string;
     mainFile: string;
     engine: 'pdflatex' | 'xelatex' | 'lualatex' | 'latexmk' | 'tectonic';
+    /** The caret's source line; the answer (`focus` in the result) says where it landed in the PDF. */
+    focus?: { file: string; line: number };
   },
   onProgress?: (message: string) => void
 ): Promise<CompileResult> {
@@ -337,7 +346,8 @@ export async function compileProject(
         pdf: bytesToBase64(await res.arrayBuffer()),
         log: job.result?.log,
         status: job.result?.status ?? 0,
-        engine: job.result?.engine
+        engine: job.result?.engine,
+        focus: job.result?.focus ?? null
       };
     }
     if (Date.now() > deadline) return { ok: false, error: 'Compilation timed out.' };

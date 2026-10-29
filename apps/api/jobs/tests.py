@@ -65,6 +65,25 @@ class CompileApiTests(ApiBase):
         self.assertEqual(self.compile(mainFile='../x.tex').data['error'], 'Invalid main file path.')
         self.delay.assert_not_called()
 
+    def test_focus_is_validated_and_stored_with_the_job(self):
+        good = self.compile(focus={'file': 'main.tex', 'line': 12, 'column': 3})
+        self.assertEqual(Job.objects.get(pk=good.data['jobId']).params['focus'], {'file': 'main.tex', 'line': 12})  # extras dropped
+        for bad in ('nope', {'file': 'main.tex'}, {'line': 3}, {'file': '../../etc/passwd', 'line': 1}, {'file': 'a.tex', 'line': 'x'},
+                    {'file': 'a.tex', 'line': 0}, {'file': 'a.tex', 'line': 10 ** 9}, {'file': 5, 'line': 1}, [1, 2]):
+            Job.objects.update(status='success')            # the per-user cap counts unfinished jobs; none of these run
+            res = self.compile(focus=bad)
+            self.assertTrue(res.data['ok'], bad)            # a bad hint never fails the compile...
+            self.assertNotIn('focus', Job.objects.get(pk=res.data['jobId']).params, bad)  # ...it is just ignored
+
+    def test_finished_job_reports_where_the_caret_landed(self):
+        job = Job.objects.create(type='compile', user=self.user, project=Project.objects.get(pk=self.pid), status='success',
+                                 result={'log': '', 'exitStatus': 0, 'engine': 'pdflatex', 'mainFile': 'main.tex', 'pdfKey': 'k',
+                                         'focus': {'page': 3, 'x': 72.0, 'y': 140.5}})
+        self.assertEqual(self.c.get(f'/api/jobs/{job.id}').data['result']['focus'], {'page': 3, 'x': 72.0, 'y': 140.5})
+        job.result = {k: v for k, v in job.result.items() if k != 'focus'}
+        job.save()
+        self.assertIsNone(self.c.get(f'/api/jobs/{job.id}').data['result']['focus'])
+
     def test_other_users_project_is_404(self):
         other = client_for(make_user('other@example.com'))
         self.assertEqual(other.post('/api/compile', {'projectId': self.pid}, format='json').status_code, 404)
@@ -86,7 +105,7 @@ class CompileApiTests(ApiBase):
         job.save()
         data = self.c.get(f'/api/jobs/{job.id}').data
         self.assertEqual(data['status'], 'success')
-        self.assertEqual(data['result'], {'log': 'LOG', 'status': 0, 'engine': 'pdflatex', 'mainFile': 'main.tex',
+        self.assertEqual(data['result'], {'log': 'LOG', 'status': 0, 'engine': 'pdflatex', 'mainFile': 'main.tex', 'focus': None,
                                           'pdfUrl': f'/api/jobs/{job.id}/pdf'})
         pdf = self.c.get(f'/api/jobs/{job.id}/pdf')
         self.assertEqual((pdf.content, pdf['Content-Type']), (b'%PDF-test', 'application/pdf'))
@@ -110,6 +129,16 @@ class CompileTaskTests(TestCase):
         with mock.patch('jobs.tasks.tex.compile_project', **mock_kwargs):
             tasks.compile_project(str(self.job.id))
         self.job.refresh_from_db()
+
+    def test_focus_goes_to_the_compiler_and_the_answer_is_kept(self):
+        self.job.params = {**self.job.params, 'focus': {'file': 'main.tex', 'line': 7}}
+        self.job.save()
+        position = {'page': 2, 'x': 72.0, 'y': 200.0}
+        with mock.patch('jobs.tasks.tex.compile_project', return_value={'pdf': b'%PDF', 'log': '', 'status': 0, 'focus': position}) as run:
+            tasks.compile_project(str(self.job.id))
+        self.assertEqual(run.call_args.kwargs['focus'], {'file': 'main.tex', 'line': 7})
+        self.job.refresh_from_db()
+        self.assertEqual(self.job.result['focus'], position)
 
     def test_success_stores_pdf(self):
         self.run_task(return_value={'pdf': b'%PDF', 'log': 'ok', 'status': 0})
@@ -324,3 +353,92 @@ class HostileDocumentTests(TestCase):
                            extra={'biber.conf': '<this is not valid biber configuration>'})
         self.assertIn('This is Biber', out['log'])
         self.assertTrue(out['pdf'], out['log'][-600:])
+
+
+class SyncTexParsingTests(TestCase):
+    def test_takes_the_first_record(self):
+        out = ('This is SyncTeX command line utility, version 1.5\nSyncTeX result begin\nOutput:main.pdf\n'
+               'Page:4\nx:71.999985\ny:81.962624\nh:71.999985\nv:81.962624\nW:468.0\nH:9.9\nbefore:\noffset:0\nmiddle:\nafter:\n'
+               'Output:main.pdf\nPage:7\nx:10.0\ny:20.0\nSyncTeX result end\n')
+        self.assertEqual(tex._parse_synctex_view(out), {'page': 4, 'x': 72.0, 'y': 81.96})
+
+    def test_no_result_or_garbage_means_no_position(self):
+        for out in ('', 'SyncTeX result begin\nSyncTeX result end\n', 'Page:abc\nx:1\ny:2\n', 'Page:2\nx:1\n', 'Page:2\ny:4\n'):
+            self.assertIsNone(tex._parse_synctex_view(out), out)
+
+    def test_nearest_lines_are_tried_first_and_never_below_one(self):
+        self.assertEqual(list(tex._probe_order(5, 3)), [5, 6, 4, 7, 3])
+        self.assertEqual(list(tex._probe_order(1, 3)), [1, 2, 3])
+        self.assertTrue(all(n >= 1 for n in tex._probe_order(2, 10)))
+
+
+@skipUnless(HAS_TEX, 'needs TeX Live: docker compose run --rm worker-tex python manage.py test jobs')
+class ForwardSearchTests(TestCase):
+    """Where does the caret's source line land in the PDF?"""
+
+    PARAGRAPHS = 60
+
+    def setUp(self):
+        user = make_user('fs@example.com')
+        self.project = Project.objects.create(workspace=user.memberships.first().workspace, name='p')
+        self.addCleanup(files.delete_project_files, self.project)
+        lines = ['\\documentclass{article}', '\\usepackage[margin=1in]{geometry}', '\\begin{document}', '\\section{First}']
+        self.para_line = {}
+        for i in range(1, self.PARAGRAPHS + 1):
+            lines.append(f'Filler paragraph number {i} of the first section.')
+            self.para_line[i] = len(lines)
+            lines.append('')                          # a blank line: no SyncTeX output of its own
+        lines += ['\\newpage', '\\section{Second}', 'Text in the second section.', '\\input{sec/third}', '\\end{document}']
+        self.first_line, self.second_line = 4, len(lines) - 3
+        files.write_text(self.project, 'main.tex', '\n'.join(lines) + '\n')
+        files.write_text(self.project, 'sec/third.tex', '\\newpage\n\\section{Third, from an included file}\nAlpha line.\n')
+        files.write_text(self.project, 'unused.tex', 'Never included.\n')
+
+    def where(self, file, line, engine='pdflatex'):
+        return tex.compile_project(self.project, 'main.tex', engine, focus={'file': file, 'line': line})['focus']
+
+    def test_positions_follow_the_document(self):
+        first = self.where('main.tex', self.first_line)
+        self.assertEqual(first['page'], 1)
+        self.assertLess(first['y'], 150)                                  # the first heading is near the top of page 1
+        early, late = self.where('main.tex', self.para_line[3]), self.where('main.tex', self.para_line[self.PARAGRAPHS])
+        self.assertLessEqual(early['page'], late['page'])
+        self.assertGreater(late['page'], 1)
+        second = self.where('main.tex', self.second_line)
+        self.assertGreater(second['page'], late['page'] - 1)              # \newpage: a later page, at the top of it
+        self.assertLess(second['y'], 150)
+
+    def test_lines_in_an_included_file_are_found(self):
+        third = self.where('sec/third.tex', 2)
+        second = self.where('main.tex', self.second_line)
+        self.assertGreater(third['page'], second['page'])
+        self.assertLess(third['y'], 150)
+
+    def test_a_blank_line_resolves_to_the_nearest_text(self):
+        blank = self.where('main.tex', self.para_line[10] + 1)             # the empty line after paragraph 10
+        near = self.where('main.tex', self.para_line[10])
+        self.assertIsNotNone(blank)
+        self.assertEqual(blank['page'], near['page'])
+
+    def test_no_position_when_there_is_nothing_to_point_at(self):
+        for file, line in (('unused.tex', 1), ('missing.tex', 1), ('../../etc/passwd', 1), ('main.tex', 0), ('sec/third.tex', -4)):
+            self.assertIsNone(self.where(file, line), (file, line))
+        out = tex.compile_project(self.project, 'main.tex', 'pdflatex')
+        self.assertIsNone(out['focus'])                                    # no hint, no search
+
+    def test_a_line_past_the_end_snaps_to_the_last_page(self):
+        # SyncTeX answers with the nearest record, so a caret below the last line shows the end of the document
+        end = self.where('main.tex', 99999)
+        self.assertEqual(end['page'], self.where('sec/third.tex', 3)['page'])
+
+    def test_a_failed_compile_has_no_position(self):
+        files.write_text(self.project, 'main.tex', '\\documentclass{article}\\begin{document}\\end{documen')
+        out = tex.compile_project(self.project, 'main.tex', 'pdflatex', focus={'file': 'main.tex', 'line': 1})
+        self.assertIsNone(out['pdf'])
+        self.assertIsNone(out['focus'])
+
+    def test_every_engine_supports_it(self):
+        for engine in ('pdflatex', 'xelatex', 'lualatex', 'latexmk'):
+            position = self.where('main.tex', self.first_line, engine)
+            self.assertIsNotNone(position, engine)
+            self.assertEqual(position['page'], 1, engine)

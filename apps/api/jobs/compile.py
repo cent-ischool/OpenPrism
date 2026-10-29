@@ -3,6 +3,7 @@
 Runs inside the `worker-tex` image. Project files are materialised into a temp dir, compiled with the
 requested engine, and the PDF is returned as bytes; nothing is left on local disk afterwards.
 """
+import itertools
 import os
 import re
 import resource
@@ -10,13 +11,14 @@ import shutil
 import signal
 import subprocess
 import tempfile
+import time
 from pathlib import Path
 
 from django.conf import settings
 
 from projects import storage
 from projects.models import ProjectFile
-from projects.paths import safe_path
+from projects.paths import InvalidPath, safe_path
 
 SUPPORTED_ENGINES = ['pdflatex', 'xelatex', 'lualatex', 'latexmk', 'tectonic']
 MULTI_PASS_ENGINES = ('pdflatex', 'xelatex', 'lualatex')  # need bibtex/biber + 2 more passes for citations
@@ -44,12 +46,15 @@ class LogBuffer:
 
 
 def build_command(engine, out_dir, main_file):
+    # -synctex=1 writes <name>.synctex.gz, the source<->PDF position map used by forward_search() below.
     if engine in MULTI_PASS_ENGINES:
-        return [engine, '-interaction=nonstopmode', f'-output-directory={out_dir}', main_file]
+        return [engine, '-interaction=nonstopmode', '-synctex=1', f'-output-directory={out_dir}', main_file]
     if engine == 'latexmk':
-        return ['latexmk', '-norc', '-pdf', '-interaction=nonstopmode', f'-outdir={out_dir}', main_file]  # -norc: a project's latexmkrc is Perl code
+        # -norc: a project's latexmkrc is Perl code. latexmk has no synctex switch of its own, so it goes in the command.
+        return ['latexmk', '-norc', '-pdf', '-pdflatex=pdflatex -synctex=1 -interaction=nonstopmode %O %S',
+                '-interaction=nonstopmode', f'-outdir={out_dir}', main_file]
     if engine == 'tectonic':
-        return ['tectonic', '--outdir', str(out_dir), main_file]
+        return ['tectonic', '--synctex', '--outdir', str(out_dir), main_file]
     raise CompileError(f'Unsupported engine: {engine}')
 
 
@@ -122,8 +127,70 @@ def _tex_env(home, engine='pdflatex'):
     return env
 
 
-def compile_project(project, main_file, engine, progress=lambda msg: None):
-    """Compile and return {'pdf': bytes|None, 'log': str, 'status': int}. Raises CompileError for setup failures."""
+SYNCTEX_TIMEOUT = 5          # seconds for the whole lookup
+SYNCTEX_MAX_PROBES = 12      # how many neighbouring lines to try when the caret's own line has no output
+SYNCTEX_FIELD = re.compile(r'^(Page|x|y):\s*(-?[0-9.]+)\s*$')
+
+
+def _parse_synctex_view(output):
+    """The first record of `synctex view` output as {'page', 'x', 'y'} (points from the page's top-left), or None."""
+    record = {}
+    for line in output.splitlines():
+        m = SYNCTEX_FIELD.match(line.strip())
+        if not m:
+            continue
+        key = m.group(1).lower()
+        if key == 'page' and 'page' in record:
+            break  # a second record starts: the first one is the best match
+        record[key] = float(m.group(2))
+    if {'page', 'x', 'y'} <= record.keys():
+        return {'page': int(record['page']), 'x': round(record['x'], 2), 'y': round(record['y'], 2)}
+    return None
+
+
+def _probe_order(line, limit):
+    """line, line+1, line-1, line+2, ...: blank lines and comments have no output, so look at the nearest ones."""
+    yield line
+    for step in range(1, limit):
+        yield line + step
+        if line - step >= 1:
+            yield line - step
+
+
+def forward_search(src, out_dir, base, focus, env):
+    """Where in the PDF is source line `focus['line']` of `focus['file']`? Returns {'page', 'x', 'y'} or None.
+
+    Runs while the compile's temp directory still exists. Best effort: a missing SyncTeX file, a file that was not part
+    of the compile, or a failing lookup all just mean "no position".
+    """
+    try:
+        file, line = safe_path(focus['file']), int(focus['line'])
+    except (KeyError, TypeError, ValueError, InvalidPath):
+        return None
+    pdf = out_dir / f'{base}.pdf'
+    if line < 1 or not pdf.is_file() or not (out_dir / f'{base}.synctex.gz').is_file():
+        return None
+    deadline = time.monotonic() + SYNCTEX_TIMEOUT
+    for probe in itertools.islice(_probe_order(line, SYNCTEX_MAX_PROBES), SYNCTEX_MAX_PROBES):
+        if time.monotonic() > deadline:
+            break
+        out = LogBuffer(limit=20_000)
+        try:
+            # The files named in the SyncTeX data are the temp paths from this compile, so run it where it ran.
+            run_command(['synctex', 'view', '-i', f'{probe}:0:{file}', '-o', str(pdf)], src, out, env, timeout=SYNCTEX_TIMEOUT)
+        except (FileNotFoundError, OSError):
+            return None  # no synctex binary in this image
+        position = _parse_synctex_view(out.text())
+        if position:
+            return position
+    return None
+
+
+def compile_project(project, main_file, engine, progress=lambda msg: None, focus=None):
+    """Compile and return {'pdf': bytes|None, 'log': str, 'status': int, 'focus': {...}|None}.
+
+    `focus` ({'file', 'line'}) asks where that source line landed in the PDF; the answer is 'focus' in the result.
+    Raises CompileError for setup failures."""
     if engine not in SUPPORTED_ENGINES:
         raise CompileError(f'Unsupported engine: {engine}')
     main_file = safe_path(main_file)
@@ -153,7 +220,8 @@ def compile_project(project, main_file, engine, progress=lambda msg: None):
 
         pdf_path = out_dir / f'{base}.pdf'
         pdf = pdf_path.read_bytes() if pdf_path.is_file() else None
-        return {'pdf': pdf, 'log': log.text(), 'status': code}
+        position = forward_search(src, out_dir, base, focus, env) if (pdf and focus) else None
+        return {'pdf': pdf, 'log': log.text(), 'status': code, 'focus': position}
     finally:
         shutil.rmtree(work, ignore_errors=True)
 
