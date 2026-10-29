@@ -41,6 +41,22 @@ cluster. Do a full run on a local `kind` cluster, then fix whatever breaks.
       `acl_latex.tex` / `acl_lualatex.tex`. The arXiv template is not in `templates/manifest.json`, and the importer
       defaults its main file to `main.tex` although the file is `template.tex`. A new project from either has no file to
       compile (cvpr, neurips and icml are fine). Fix the manifest/importer, then check the editor opens the right file.
+- [ ] **Zotero connector.** Let a user link their Zotero library (and group libraries) and use it from a project: browse or
+      search references, insert `\cite{}` keys at the cursor, and keep a project `.bib` file in sync. It would sit
+      beside the existing arXiv search/BibTeX tools in the editor. Notes for whoever picks it up:
+      - Zotero's Web API (v3, `api.zotero.org`) can return items as BibTeX/BibLaTeX and supports incremental sync with
+        a library version number; it asks clients to honour `Backoff` / `Retry-After`. Check current limits first.
+      - *Credentials are the main design decision.* A Zotero API key (or OAuth token) is a long-lived per-user secret,
+        and the app currently stores no user secrets (LLM keys live only in Redis for a job's duration). Either keep it in
+        the browser like the LLM key, or store it server-side encrypted, which needs key management and a deletion/rotation
+        path. Sync from a Celery task (not the request) needs the secret available there.
+      - Citation keys must be stable and unique across a library; decide between Zotero's own keys, Better BibTeX keys,
+        or generating them, and what happens when a key changes after it has been cited.
+      - Generated `.bib` content should be treated as managed: decide whether users may edit it, and how a re-sync
+        handles local edits (it will collide with collaborative editing of the same file).
+      - The API host is fixed, so the SSRF guard that protects user-supplied URLs is not needed, but responses are
+        untrusted input (BibTeX is fed to LaTeX/bibtex, which run in the hardened compile worker).
+      - Tests can follow the existing pattern: a fake HTTP server standing in for Zotero.
 - [ ] **Account management is minimal.** No password reset, email verification, change-password screen, or
       account deletion. Registration is open to anyone who can reach the site (consider invite-only or verification).
 - [ ] **Workspace invitations send no email.** Invited addresses wait until that person registers; the inviter has to
