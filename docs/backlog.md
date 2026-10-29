@@ -45,6 +45,27 @@ cluster. Do a full run on a local `kind` cluster, then fix whatever breaks.
       calling compile and returning `true` so the default is suppressed; keep the window listener for when focus is
       elsewhere. Add a browser test that Ctrl/Cmd+Enter compiles, adds no line, and works in collaborative mode too.
 
+- [ ] **After recompiling, the PDF preview should jump to where the user is editing** (reported). If the caret is in
+      section X, the preview should show section X after the new PDF loads, not the top of the document or a stale
+      position. Not yet investigated in detail; notes for whoever picks it up:
+      - *Nothing maps source to PDF today.* No SyncTeX anywhere in the repo, and compiles do not pass `-synctex=1`. The
+        TeX worker image already ships the `synctex` binary. The preview is pdf.js in `EditorPage.tsx` and already has a
+        `scrollToPdfPage(page)` helper used by annotations and the outline.
+      - *Accurate approach: SyncTeX forward search.* Compile with `-synctex=1` (and keep `main.synctex.gz` next to the
+        PDF), then ask `synctex view -i line:column:file -o output.pdf` for the page and position of the caret's source
+        line. Things to handle: paths inside the file are the worker's temp directories, so they must be mapped back to
+        project paths; `\input`ed files and the active file may differ from the main file; compile output is returned
+        through the job API, so the SyncTeX data must be stored and served with the PDF (and cleaned up with it).
+        Treat the SyncTeX file as untrusted input from a user's document.
+      - *Cheaper fallback:* find the section heading the caret is under (the editor already parses the outline) and jump
+        to the matching heading via the PDF's own outline (needs `hyperref`) or by searching the text layer. Less exact,
+        and it breaks with starred sections, renamed headings or documents without hyperref.
+      - *At minimum*, keep the reader's current page/scroll and zoom across a recompile instead of resetting them.
+      - Decide what happens when the user has scrolled the preview themselves since compiling (do not yank them back),
+        and make it a setting. In collaboration each person's preview position is their own.
+      - Natural follow-up once SyncTeX data exists: click in the PDF to jump to the source line (reverse search).
+      - Test in a browser: place the caret in a late section, recompile, and assert the visible page contains it.
+
 ## Product gaps
 
 - [ ] **Template transfer: the layout check cannot finish from the UI** *(pre-existing)*. The backend supports the whole
