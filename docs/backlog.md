@@ -35,15 +35,15 @@ cluster. Do a full run on a local `kind` cluster, then fix whatever breaks.
 
 - [ ] **New file, new folder and upload file do nothing in the editor's file panel** (reported). None of the three
       toolbar actions (New file, New folder, Upload files) works. Not yet investigated, and it hasn't been
-      reproduced in a browser. What is known:
-      - The API side of all three is covered by backend tests: creating a folder, writing a file, and uploading
-        (including folders with relative paths). So the fault is more likely in the frontend or in how it calls the API.
-      - These client calls were changed during the migration (they now go through `apiFetch`, and `uploadFiles` no longer
-        sets its own headers), so check those first for regressions.
-      - The browser checks done so far covered sign-in, compile, invite links and live editing. They never clicked
-        these three buttons.
-      - Start by reproducing it with the network tab open and the browser console visible, to see whether a request
-        is sent at all, and what status it gets back. Then add a browser test for each action.
+      reproduced yet. Findings so far:
+      - Browser tests (`apps/frontend/e2e/file-panel.spec.ts`) click New file, New folder and Upload files and all
+        three work: with an account session on the Vite dev server and on the nginx image (:8080), and with an
+        editor-role invite (guest) session. Each sends one request (PUT file / POST folder / POST upload) that returns 200.
+      - Still untried: Firefox/Safari, a viewer role, live collaboration switched on, a project that already has folders
+        or a custom file order, and the zh-CN locale. Errors from these actions only go to the status bar, so a failure
+        can look like "nothing happened". Ask the reporter for browser, session type and what appears on screen.
+      - The inline name input cancels itself on blur, so anything that steals focus right after the click would abort
+        New file / New folder silently.
 
 ## Product gaps
 
