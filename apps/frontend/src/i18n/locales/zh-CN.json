@@ -687,5 +687,6 @@
   "Could not move {{project}}: {{error}}": "无法移动 {{project}}：{{error}}",
   "Password": "密码",
   "Shared project": "共享项目",
-  "Server default": "服务器默认值"
+  "Server default": "服务器默认值",
+  "Needs XeLaTeX, recompiling…": "需要 XeLaTeX，正在重新编译…"
 }

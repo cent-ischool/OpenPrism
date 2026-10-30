@@ -55,4 +55,78 @@ test.describe('what compile builds', () => {
     await pdf;
     await expect(page.locator('.pdf-page .textLayer span', { hasText: 'Zebraword' }).first()).toBeVisible({ timeout: 30_000 });
   });
+
+  test('retries with XeLaTeX when the document needs fontspec, instead of leaving the old PDF', async ({ page }) => {
+    const session = await newAccount('engine');
+    const id = await newProject(session, 'Engine', {
+      'main.tex': '\\documentclass{article}\n\\usepackage{fontspec}\n\\begin{document}\nFontspecword\n\\end{document}\n'
+    });
+    await signIn(page, session);
+    await page.goto(`/editor/${id}`);
+    await page.waitForSelector('.cm-editor');
+    await page.locator('.cm-content').click();
+    await page.keyboard.press('Control+Enter'); // the default engine is pdfLaTeX, which cannot load fontspec
+    await expect(page.locator('.pdf-page .textLayer span', { hasText: 'Fontspecword' }).first()).toBeVisible({ timeout: 60_000 });
+  });
+
+  test('shows the log, not the previous PDF, when a compile fails', async ({ page }) => {
+    const session = await newAccount('fail');
+    const id = await newProject(session, 'Fail', {
+      'main.tex': doc('Goodword'),
+      'bad.tex': '\\documentclass{article}\n\\begin{document}\n\\undefinedmacro\n\\end{document}\n'
+    });
+    await signIn(page, session);
+    await page.goto(`/editor/${id}`);
+    await page.waitForSelector('.cm-editor');
+    await page.locator('.cm-content').click();
+    await page.keyboard.press('Control+Enter');
+    await expect(page.locator('.pdf-page .textLayer span', { hasText: 'Goodword' }).first()).toBeVisible({ timeout: 60_000 });
+    await openFile(page, 'bad.tex');
+    await page.locator('.cm-content').click();
+    await page.keyboard.press('Control+Enter');
+    await expect(page.locator('.log-panel')).toBeVisible({ timeout: 60_000 });
+    await expect(page.locator('.log-errors .error-item', { hasText: 'Undefined control sequence' })).toBeVisible();
+  });
+
+  test('switching files switches to that file\'s own PDF', async ({ page }) => {
+    await openProject(page);
+    const word = (w: string) => page.locator('.pdf-page .textLayer span', { hasText: w }).first();
+    await openFile(page, 'a.tex');
+    await page.locator('.cm-content').click();
+    await page.keyboard.press('Control+Enter');
+    await expect(word('Alphadoc')).toBeVisible({ timeout: 60_000 });
+
+    await openFile(page, 'b.tex'); // never compiled: must not keep showing a.tex's PDF
+    await expect(page.locator('.pdf-page')).toHaveCount(0);
+    await page.locator('.cm-content').click();
+    await page.keyboard.press('Control+Enter');
+    await expect(word('Betadoc')).toBeVisible({ timeout: 60_000 });
+
+    const compiles: string[] = [];
+    page.on('request', (r) => { if (r.method() === 'POST' && /\/api\/compile$/.test(r.url())) compiles.push(r.url()); });
+    await openFile(page, 'a.tex'); // back to a: its PDF returns without compiling again
+    await expect(word('Alphadoc')).toBeVisible({ timeout: 30_000 });
+    expect(compiles).toHaveLength(0);
+  });
+
+  test('the XeLaTeX retry applies to that file only, not to the next one', async ({ page }) => {
+    const session = await newAccount('engine2');
+    const id = await newProject(session, 'Engine2', {
+      'a.tex': '\\documentclass{article}\n\\usepackage{fontspec}\n\\begin{document}\nNeedsxe\n\\end{document}\n',
+      'b.tex': doc('Plainword')
+    });
+    await signIn(page, session);
+    await page.goto(`/editor/${id}`);
+    await page.waitForSelector('.cm-editor');
+    await openFile(page, 'a.tex');
+    await page.locator('.cm-content').click();
+    await page.keyboard.press('Control+Enter');
+    await expect(page.locator('.pdf-page .textLayer span', { hasText: 'Needsxe' }).first()).toBeVisible({ timeout: 60_000 });
+
+    await openFile(page, 'b.tex');
+    await page.locator('.cm-content').click();
+    const request = page.waitForRequest((r) => r.method() === 'POST' && /\/api\/compile$/.test(r.url()));
+    await page.keyboard.press('Control+Enter');
+    expect(JSON.parse((await request).postData() ?? '{}').engine).toBe('pdflatex');
+  });
 });
