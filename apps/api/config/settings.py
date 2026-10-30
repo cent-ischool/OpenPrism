@@ -149,6 +149,11 @@ CELERY_TASK_ROUTES = {
     'ai.tasks.*': {'queue': 'ai'},
     'transfer.tasks.*': {'queue': 'transfer'},  # served by worker-tex: transfer compiles LaTeX
     'projects.tasks.*': {'queue': 'import'},
+    # Housekeeping from beat. No worker consumes Celery's default `celery` queue, so an unrouted task is never run:
+    # without these, jobs whose worker died stay "running" forever and hold the user's compile slots (429).
+    'jobs.tasks.reap_stale_jobs': {'queue': 'import'},
+    'jobs.tasks.cleanup_old_jobs': {'queue': 'import'},
+    'collab.tasks.*': {'queue': 'import'},
 }
 CELERY_BEAT_SCHEDULE = {
     'reap-stale-jobs': {'task': 'jobs.tasks.reap_stale_jobs', 'schedule': 60.0},
