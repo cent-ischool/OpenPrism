@@ -6,10 +6,16 @@
 # placeholder is enough there.
 set -eu
 
-# A random key per start is enough for a single-replica preview (sessions/JWTs do not survive a restart).
-# Set DJANGO_SECRET_KEY as an app variable to make it stable.
+# The api, the workers and beat share one key, so whatever one process signs another can check, and it survives a
+# restart (logins outlive a redeploy). Derived from the namespace's S3 secret, which every one of them gets and nothing else
+# shares; random only where that Secret is absent (the migrations hook, which signs nothing).
+# Set DJANGO_SECRET_KEY as an app variable to choose it instead.
 if [ -z "${DJANGO_SECRET_KEY:-}" ]; then
-  DJANGO_SECRET_KEY="$(python -c 'import secrets; print(secrets.token_urlsafe(50))')"
+  if [ -n "${AWS_SECRET_ACCESS_KEY:-}" ]; then
+    DJANGO_SECRET_KEY="$(python -c 'import hashlib, os; print(hashlib.sha256(b"openprism-django:" + os.environ["AWS_SECRET_ACCESS_KEY"].encode()).hexdigest())')"
+  else
+    DJANGO_SECRET_KEY="$(python -c 'import secrets; print(secrets.token_urlsafe(50))')"
+  fi
   export DJANGO_SECRET_KEY
 fi
 

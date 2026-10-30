@@ -1,25 +1,69 @@
 apiVersion: forge/v1
 
-# The Django API (apps/api). Its Dockerfile's last stage is `api`, which is what a plain build produces.
-# The React/nginx `web` image and the TeX/AI Celery workers have their own Dockerfile stages and are not
-# part of this contract yet.
-build:
+# Every process compose.yaml runs, as compose runs it. compose's postgres, redis and garage become the platform's
+# own `database`, `cache` and `objectStorage` below; the devcontainer (docker-in-docker) is the dev shell, not a
+# service.
+#
+# Four images, as compose builds them: three stages of apps/api/Dockerfile and the nginx frontend, which builds
+# from the repo root because it imports the shared /design package.
+build:                      # api and beat: the `api` stage
   context: apps/api
   dockerfile: Dockerfile
+  target: api
+builds:
+  tex:                      # the TeX Live worker (queues compile, transfer)
+    context: apps/api
+    dockerfile: Dockerfile
+    target: tex
+  ai:                       # the LLM/plotting worker (queues ai, import)
+    context: apps/api
+    dockerfile: Dockerfile
+    target: ai
+  web:                      # the built SPA behind nginx, proxying /api to `api`
+    dockerfile: apps/frontend/Dockerfile
 
 services:
-  api:
-    image: openprism-api
-    command: ["sh", "forge-entrypoint.sh", "uvicorn", "config.asgi:application", "--host", "0.0.0.0", "--port", "8000"]
-    port: 8000
+  # The URL. nginx serves the SPA and proxies /api (and the collaboration websocket) to http://api:8000, which is
+  # this contract's `api` service by name.
+  web:
+    build: web
+    port: 8080
     expose: true
     healthcheck:
       path: /healthz
+
+  api:
+    command: ["sh", "forge-entrypoint.sh", "uvicorn", "config.asgi:application", "--host", "0.0.0.0", "--port", "8000"]
+    port: 8000
+    healthcheck:
+      path: /healthz
     envFromSecret: forge-object-storage
-    env:
+    env: &api-env
       DJANGO_ALLOWED_HOSTS: "*"
       DJANGO_BEHIND_TLS_PROXY: "1"
-      TRUSTED_PROXY_COUNT: "2"
+      TRUSTED_PROXY_COUNT: "2"   # the ingress, then nginx
+
+  # The workers have no port and no probe (the contract's health checks are HTTP); a crash restarts the pod.
+  # OPENPRISM_LLM_* and OPENPRISM_MINERU_TOKEN are not set here: the AI and import features need them added as
+  # app variables (`secrets:` on worker-ai, worker-tex and api).
+  worker-tex:
+    build: tex
+    command: ["sh", "forge-entrypoint.sh", "celery", "-A", "config", "worker", "-Q", "compile,transfer", "-l", "info", "--concurrency", "2"]
+    envFromSecret: forge-object-storage
+    env: *api-env
+    resources:
+      memory: 1Gi
+
+  worker-ai:
+    build: ai
+    command: ["sh", "forge-entrypoint.sh", "celery", "-A", "config", "worker", "-Q", "ai,import", "-l", "info", "--concurrency", "4"]
+    envFromSecret: forge-object-storage
+    env: *api-env
+
+  beat:
+    command: ["sh", "forge-entrypoint.sh", "celery", "-A", "config", "beat", "-l", "info", "--schedule", "/tmp/celerybeat-schedule"]
+    envFromSecret: forge-object-storage
+    env: *api-env
 
 database:
   engine: postgres
@@ -36,6 +80,7 @@ objectStorage:
     openprism: {}
 
 migrations:
+  build: default            # the api image; the exposed service is nginx
   command: ["sh", "forge-entrypoint.sh", "python", "manage.py", "migrate", "--noinput"]
 
 tests:
@@ -50,6 +95,8 @@ tests:
       - -c
       - |
         set -e
+        # The suite runs as a non-root user, so pip's `setup` installed moto_server into ~/.local/bin.
+        export PATH="$HOME/.local/bin:$PATH"
         export DATABASE_URL="postgres://openprism:notasecret@${DATABASE_HOST}:5432/openprism"
         export REDIS_URL="redis://${REDIS_HOST}:6379/0"
         export S3_ENDPOINT_URL=http://127.0.0.1:3900
