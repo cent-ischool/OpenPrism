@@ -109,14 +109,20 @@ tests:
         s3 = boto3.client('s3', endpoint_url='http://127.0.0.1:3900', region_name='garage',
                           aws_access_key_id='testing', aws_secret_access_key='testing',
                           config=Config(s3={'addressing_style': 'path'}))
+        # Outside us-east-1, S3 (and moto) refuse a bucket with no LocationConstraint; that refusal used to look
+        # like a server that never started.
         for _ in range(60):
             try:
-                s3.create_bucket(Bucket='openprism')
+                s3.create_bucket(Bucket='openprism', CreateBucketConfiguration={'LocationConstraint': 'garage'})
                 break
-            except Exception:
+            except s3.exceptions.BucketAlreadyOwnedByYou:
+                break
+            except Exception as exc:
+                last = exc
                 time.sleep(1)
         else:
-            raise SystemExit('moto S3 server did not start')
+            print(open('/tmp/moto.log').read()[-2000:])
+            raise SystemExit(f'moto S3 server did not start: {last!r}')
         PY
         cd apps/api
         python manage.py test --noinput
