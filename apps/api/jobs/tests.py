@@ -442,3 +442,27 @@ class ForwardSearchTests(TestCase):
             position = self.where('main.tex', self.first_line, engine)
             self.assertIsNotNone(position, engine)
             self.assertEqual(position['page'], 1, engine)
+
+
+class TaskRoutingTests(TestCase):
+    """Every task must land on a queue some worker consumes. The workers' queues are their Dockerfile CMDs (compose
+    runs those; .agentforge/app.yaml repeats them). A task that falls through to Celery's default queue is never run."""
+
+    def worker_queues(self):
+        dockerfile = os.path.join(settings.BASE_DIR, 'Dockerfile')
+        queues = set()
+        with open(dockerfile) as f:
+            for line in f:
+                if line.startswith('CMD ') and '"worker"' in line:
+                    args = json.loads(line[4:])
+                    queues.update(args[args.index('-Q') + 1].split(','))
+        return queues
+
+    def test_every_task_is_routed_to_a_served_queue(self):
+        from config.celery import app
+        app.loader.import_default_modules()
+        served = self.worker_queues()
+        self.assertTrue(served)
+        for name in sorted(n for n in app.tasks if not n.startswith('celery.')):
+            queue = app.amqp.router.route({}, name)['queue'].name
+            self.assertIn(queue, served, f'{name} is routed to {queue!r}, which no worker consumes')
