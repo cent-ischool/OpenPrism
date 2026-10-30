@@ -69,6 +69,7 @@ import {
 } from '@design';
 import type { IconName, MenuEntry, SegmentOption } from '@design';
 import './editor-shell.css';
+import { dropLegacyLlmDefaults } from './llmDefaults';
 
 GlobalWorkerOptions.workerSrc = pdfWorker;
 
@@ -207,9 +208,9 @@ function fileIconClass(path: string) {
 
 const SETTINGS_KEY = 'openprism-settings-v1';
 const DEFAULT_SETTINGS: AppSettings = {
-  llmEndpoint: 'https://api.openai.com/v1/chat/completions',
+  llmEndpoint: '',
   llmApiKey: '',
-  llmModel: 'gpt-4o-mini',
+  llmModel: '',
   searchEndpoint: '',
   searchApiKey: '',
   searchModel: '',
@@ -234,11 +235,11 @@ function loadSettings(): AppSettings {
       VALID_ENGINES.includes(engine as CompileEngine)
         ? (engine as CompileEngine)
         : DEFAULT_SETTINGS.compileEngine;
-    return {
+    return dropLegacyLlmDefaults({
       ...DEFAULT_SETTINGS,
       ...parsed,
       compileEngine
-    };
+    });
   } catch {
     return DEFAULT_SETTINGS;
   }
@@ -291,6 +292,19 @@ function normalizeServerUrl(value: string) {
 
 const FIGURE_EXTS = ['.png', '.jpg', '.jpeg', '.pdf', '.svg', '.eps'];
 const TEXT_EXTS = ['.sty', '.cls', '.bst', '.txt', '.md', '.json', '.yaml', '.yml', '.csv', '.tsv'];
+
+// A file that can be compiled on its own (as opposed to a section pulled in with \input).
+function isRootDocument(text: string) {
+  return /^[ \t]*\\documentclass\b/m.test(text);
+}
+
+const mainFileKey = (projectId: string) => `openprism-main-file:${projectId}`;
+
+// What fontspec prints under pdfLaTeX: "requires either XeTeX or\n(fontspec)   LuaTeX."
+const NEEDS_UNICODE_ENGINE = /requires either XeTeX or[\s\S]{0,60}LuaTeX/i;
+
+/** One compile result per target, so switching files shows that file's own PDF and log. */
+interface CompiledView { url: string; log: string; engine: string }
 
 function isTextPath(filePath: string) {
   const lower = filePath.toLowerCase();
@@ -624,6 +638,118 @@ function extractIncludeTargets(text: string) {
     }
   });
   return targets;
+}
+
+type Directive = { kind: 'include' | 'graphic' | 'graphicspath'; raw: string; pos: number };
+
+/** \input / \include / \includegraphics / \graphicspath in source order (comments ignored). */
+function scanDirectives(text: string): Directive[] {
+  const out: Directive[] = [];
+  let offset = 0;
+  for (const line of text.split(/\r?\n/)) {
+    const clean = stripLineComment(line);
+    const regex = /\\(input|include|includegraphics|graphicspath)\*?\b\s*(?:\[[^\]]*\])?\s*\{((?:[^{}]|\{[^{}]*\})*)\}/g;
+    let match: RegExpExecArray | null;
+    while ((match = regex.exec(clean))) {
+      const kind = match[1] === 'input' || match[1] === 'include' ? 'include' : match[1] === 'graphicspath' ? 'graphicspath' : 'graphic';
+      out.push({ kind, raw: match[2].trim(), pos: offset + match.index });
+    }
+    offset += line.length + 1;
+  }
+  return out;
+}
+
+function resolveTexPath(raw: string, from: string, known: Set<string>) {
+  let name = raw.replace(/^\.\//, '').replace(/^\//, '');
+  if (!name) return null;
+  if (!name.toLowerCase().endsWith('.tex')) name = `${name}.tex`;
+  const base = getParentPath(from);
+  // LaTeX resolves against the compile directory (the project root); fall back to the including file's folder.
+  for (const candidate of [name, base ? `${base}/${name}` : name]) {
+    if (known.has(candidate)) return candidate;
+  }
+  return null;
+}
+
+function resolveFigurePath(raw: string, dirs: string[], known: Set<string>) {
+  const name = raw.replace(/^\.\//, '');
+  for (const dir of ['', ...dirs]) {
+    const base = dir ? `${dir.replace(/^\.\//, '').replace(/\/+$/, '')}/${name}` : name;
+    for (const ext of ['', ...FIGURE_EXTS]) {
+      if (known.has(base + ext) && isFigureFile(base + ext)) return base + ext;
+    }
+  }
+  return null;
+}
+
+interface DocumentTree {
+  tex: string; // the .tex file this describes (the one being edited)
+  root: string; // the document that gets compiled for it
+  outline: (OutlineItem & { file: string })[];
+  figures: string[];
+}
+
+/** Headings and figures of one .tex file, with its \input / \include files expanded in place. */
+async function buildDocumentTree(
+  tex: string,
+  readText: (path: string) => Promise<string | undefined>,
+  known: Set<string>
+) {
+  const outline: DocumentTree['outline'] = [];
+  const graphics: string[] = [];
+  const dirs: string[] = [];
+  const files: string[] = [];
+  const seen = new Set<string>();
+  const visit = async (file: string, depth: number) => {
+    if (seen.has(file) || depth > 6) return;
+    seen.add(file);
+    files.push(file);
+    const text = await readText(file);
+    if (text === undefined) return;
+    const events: { pos: number; heading?: OutlineItem; directive?: Directive }[] = [
+      ...parseOutline(text).map((heading) => ({ pos: heading.pos, heading })),
+      ...scanDirectives(text).map((directive) => ({ pos: directive.pos, directive }))
+    ].sort((a, b) => a.pos - b.pos);
+    for (const event of events) {
+      if (event.heading) {
+        outline.push({ ...event.heading, file });
+      } else if (event.directive?.kind === 'include') {
+        const target = resolveTexPath(event.directive.raw, file, known);
+        if (target) await visit(target, depth + 1);
+      } else if (event.directive?.kind === 'graphic') {
+        graphics.push(event.directive.raw);
+      } else if (event.directive?.kind === 'graphicspath') {
+        for (const m of event.directive.raw.matchAll(/\{([^{}]*)\}/g)) dirs.push(m[1]);
+      }
+    }
+  };
+  await visit(tex, 0);
+  const figures: string[] = [];
+  for (const raw of graphics) {
+    const found = resolveFigurePath(raw, dirs, known);
+    if (found && !figures.includes(found)) figures.push(found);
+  }
+  return { outline, figures, files };
+}
+
+/** The PDF's own bookmarks, flattened, with the page each points to. */
+async function readPdfOutline(pdf: any, untitled: string) {
+  const items: { title: string; page?: number; level: number }[] = [];
+  const walk = async (entries: any[] | null, level: number) => {
+    for (const entry of entries ?? []) {
+      let page: number | undefined;
+      try {
+        const dest = typeof entry.dest === 'string' ? await pdf.getDestination(entry.dest) : entry.dest;
+        if (Array.isArray(dest) && dest.length > 0) page = (await pdf.getPageIndex(dest[0])) + 1;
+      } catch {
+        page = undefined;
+      }
+      items.push({ title: entry.title || untitled, page, level });
+      if (entry.items?.length) await walk(entry.items, level + 1);
+    }
+  };
+  await walk(await pdf.getOutline(), 1);
+  return items;
 }
 
 function findNearestHeading(text: string, cursorPos: number) {
@@ -999,6 +1125,8 @@ function parseCompileErrors(log: string): CompileError[] {
     }
     if (line.startsWith('!')) {
       const message = line.replace(/^!+\s*/, '').trim();
+      // Follow-on noise from the first real error; the log below still has it.
+      if (/^(Emergency stop|==> Fatal error)/.test(message)) continue;
       let lineNo: number | undefined;
       for (let j = i + 1; j < Math.min(i + 4, lines.length); j += 1) {
         const match = lines[j].match(/l\.(\d+)/);
@@ -1446,7 +1574,8 @@ export default function EditorPage() {
   const [autoInsertCite, setAutoInsertCite] = useState(true);
   const [autoInsertToMain, setAutoInsertToMain] = useState(false);
   const [citeTargetFile, setCiteTargetFile] = useState('');
-  const [outlineText, setOutlineText] = useState('');
+  const [currentTex, setCurrentTex] = useState(''); // the last .tex file opened: outline, PDF and figures follow it
+  const [docTree, setDocTree] = useState<DocumentTree | null>(null);
   const [currentHeading, setCurrentHeading] = useState<{ title: string; level: string } | null>(null);
   const [plotType, setPlotType] = useState<'bar' | 'line' | 'heatmap'>('bar');
   const [plotTitle, setPlotTitle] = useState('');
@@ -1501,6 +1630,10 @@ export default function EditorPage() {
   const pdfContainerRef = useRef<HTMLDivElement | null>(null);
   /** Where the caret's source line landed in the newly compiled PDF; consumed once by PdfPreview when it renders. */
   const pdfFocusRef = useRef<PdfFocus | null>(null);
+  const compiledViewsRef = useRef(new Map<string, CompiledView>());
+  const viewTargetRef = useRef('');
+  const filesRef = useRef<Record<string, string>>({});
+  const engineOverridesRef = useRef(new Map<string, CompileEngine>()); // per file; the engine setting stays the user's
   /** The preview's scroll position when the compile started: if it has changed by the time the PDF arrives, the reader scrolled. */
   const pdfScrollAtCompileRef = useRef(0);
   const fileTreeRef = useRef<HTMLDivElement | null>(null);
@@ -3078,34 +3211,51 @@ export default function EditorPage() {
     [t]
   );
 
-  const outlineItems = useMemo(() => {
-    if (!outlineText || !mainFile || !mainFile.toLowerCase().endsWith('.tex')) return [];
-    return parseOutline(outlineText);
-  }, [outlineText, mainFile]);
-
+  filesRef.current = files;
   useEffect(() => {
-    if (!mainFile) {
-      setOutlineText('');
-      return;
-    }
-    if (activePath === mainFile) {
-      setOutlineText(editorValue);
+    if (activePath.toLowerCase().endsWith('.tex')) setCurrentTex(activePath);
+  }, [activePath]);
+
+  const knownPaths = useMemo(() => new Set(tree.filter((item) => item.type === 'file').map((item) => item.path)), [tree]);
+  const liveTex = activePath === currentTex ? editorValue : null; // unsaved text of the file being edited
+  useEffect(() => {
+    if (!currentTex) {
+      setDocTree(null);
       return;
     }
     let cancelled = false;
-    const load = async () => {
-      try {
-        const content = await ensureFileContent(mainFile);
-        if (!cancelled) setOutlineText(content);
-      } catch {
-        if (!cancelled) setOutlineText('');
+    const timer = window.setTimeout(async () => {
+      const readText = async (path: string) => {
+        if (path === currentTex && liveTex !== null) return liveTex;
+        const cached = filesRef.current[path];
+        if (cached !== undefined) return cached;
+        try {
+          const data = await getFile(projectId, path);
+          setFiles((prev) => ({ ...prev, [path]: data.content }));
+          return data.content;
+        } catch {
+          return undefined;
+        }
+      };
+      const built = await buildDocumentTree(currentTex, readText, knownPaths);
+      let root = currentTex;
+      if (!isRootDocument((await readText(currentTex)) ?? '')) {
+        // A section: its PDF is the document that includes it (the most recently compiled one, else the main file).
+        const owners: string[] = [];
+        for (const candidate of texFiles) {
+          if (candidate === currentTex || !isRootDocument((await readText(candidate)) ?? '')) continue;
+          if ((await buildDocumentTree(candidate, readText, knownPaths)).files.includes(currentTex)) owners.push(candidate);
+        }
+        const compiled = [...compiledViewsRef.current.keys()].reverse().find((key) => owners.includes(key));
+        root = compiled ?? (owners.includes(mainFile) ? mainFile : owners[0]) ?? mainFile;
       }
-    };
-    load();
+      if (!cancelled) setDocTree({ tex: currentTex, root, outline: built.outline, figures: built.figures });
+    }, 300);
     return () => {
       cancelled = true;
+      window.clearTimeout(timer);
     };
-  }, [activePath, editorValue, ensureFileContent, mainFile]);
+  }, [currentTex, liveTex, knownPaths, texFiles, mainFile, projectId]);
 
   useEffect(() => {
     if (!visionFile) {
@@ -3122,10 +3272,32 @@ export default function EditorPage() {
   useEffect(() => {
     if (texFiles.length === 0) return;
     if (!texFiles.includes(mainFile)) {
-      const preferred = texFiles.find((path) => path.endsWith('main.tex')) || texFiles[0];
+      let remembered: string | null = null;
+      try { remembered = window.localStorage.getItem(mainFileKey(projectId)); } catch { /* storage unavailable */ }
+      const preferred = (remembered && texFiles.includes(remembered) ? remembered : null)
+        || texFiles.find((path) => path.endsWith('main.tex')) || texFiles[0];
       setMainFile(preferred);
     }
-  }, [texFiles, mainFile]);
+  }, [texFiles, mainFile, projectId]);
+
+  const viewTarget = !currentTex
+    ? mainFile
+    : docTree?.tex === currentTex
+      ? docTree.root
+      : liveTex !== null && isRootDocument(liveTex) ? currentTex : mainFile;
+  viewTargetRef.current = viewTarget;
+  useEffect(() => {
+    const shown = compiledViewsRef.current.get(viewTarget);
+    pdfFocusRef.current = null;
+    setPdfUrl(shown?.url ?? '');
+    setCompileLog(shown?.log ?? '');
+    setEngineName(shown?.engine ?? '');
+  }, [viewTarget]);
+
+  const chooseMainFile = useCallback((path: string) => {
+    setMainFile(path);
+    try { window.localStorage.setItem(mainFileKey(projectId), path); } catch { /* storage unavailable */ }
+  }, [projectId]);
 
   useEffect(() => {
     if (citeTargetFile) return;
@@ -3418,7 +3590,16 @@ export default function EditorPage() {
     pdfScrollAtCompileRef.current = pdfContainerRef.current?.scrollTop ?? 0;
     setIsCompiling(true);
     setStatus(t('编译中...'));
+    // Compile the open file if it is a complete document; a section (\input'd file) compiles via the main file.
+    const target = viewTarget;
+    const views = compiledViewsRef.current;
+    const stillViewing = () => viewTargetRef.current === target; // the reader may have switched files meanwhile
     try {
+      // The server compiles what is saved; autosave waits 1.5 s, so write the open file now.
+      if (!collabActiveRef.current && isDirty && activePath) {
+        await writeFile(projectId, activePath, editorValue);
+        setIsDirty(false);
+      }
       const { files: serverFiles } = await getAllFiles(projectId);
       const fileMap: Record<string, string | Uint8Array> = {};
       for (const file of serverFiles) {
@@ -3432,8 +3613,8 @@ export default function EditorPage() {
       if (activePath) {
         fileMap[activePath] = editorValue;
       }
-      if (!fileMap[mainFile]) {
-        throw new Error(t('主文件不存在: {{file}}', { file: mainFile }));
+      if (!fileMap[target]) {
+        throw new Error(t('主文件不存在: {{file}}', { file: target }));
       }
       // Compiling reads the saved project, so in a live session save it first: otherwise the last words typed are
       // missing from the PDF and the caret's line number may no longer match what was compiled.
@@ -3444,7 +3625,15 @@ export default function EditorPage() {
       const focus = view && activePath && isTextPath(activePath)
         ? { file: activePath, line: view.state.doc.lineAt(view.state.selection.main.head).number }
         : undefined;
-      const res = await compileProject({ projectId, mainFile, engine: compileEngine, focus }, (message) => setStatus(message));
+      let engine = engineOverridesRef.current.get(target) ?? compileEngine;
+      let res = await compileProject({ projectId, mainFile: target, engine, focus }, (message) => setStatus(message));
+      // fontspec and friends cannot run under pdfLaTeX/latexmk; rebuild once with XeLaTeX and remember it for this file.
+      if (!res.pdf && (engine === 'pdflatex' || engine === 'latexmk') && NEEDS_UNICODE_ENGINE.test(res.log || '')) {
+        engine = 'xelatex';
+        setStatus(t('Needs XeLaTeX, recompiling…'));
+        res = await compileProject({ projectId, mainFile: target, engine, focus }, (message) => setStatus(message));
+        if (res.pdf) engineOverridesRef.current.set(target, engine);
+      }
       if (!res.ok || !res.pdf) {
         const detail = [res.error, res.log].filter(Boolean).join('\n');
         throw new Error(detail || t('后端编译失败'));
@@ -3453,28 +3642,37 @@ export default function EditorPage() {
         pdf: Uint8Array.from(atob(res.pdf), (c) => c.charCodeAt(0)),
         log: res.log || '',
         status: res.status ?? 0,
-        engine: compileEngine
+        engine
       };
 
       const meta = [
-        t('Engine: {{engine}}', { engine: compileEngine }),
-        t('Main file: {{file}}', { file: mainFile })
+        t('Engine: {{engine}}', { engine }),
+        t('Main file: {{file}}', { file: target })
       ].filter(Boolean).join('\n');
-      setEngineName(compileEngine);
-      setCompileLog(`${meta}\n\n${result.log || t('No log')}`.trim());
+      const log = `${meta}\n\n${result.log || t('No log')}`.trim();
 
       const blob = new Blob([result.pdf], { type: 'application/pdf' });
       const nextUrl = URL.createObjectURL(blob);
-      if (pdfUrl) {
-        URL.revokeObjectURL(pdfUrl);
+      const previous = views.get(target);
+      if (previous?.url) URL.revokeObjectURL(previous.url);
+      views.delete(target); // keeps the map in order of last compile
+      views.set(target, { url: nextUrl, log, engine });
+      if (stillViewing()) {
+        setEngineName(engine);
+        setCompileLog(log);
+        pdfFocusRef.current = res.focus ?? null; // read by PdfPreview when this PDF finishes rendering
+        setPdfUrl(nextUrl);
+        setRightView('pdf');
       }
-      pdfFocusRef.current = res.focus ?? null; // read by PdfPreview when this PDF finishes rendering
-      setPdfUrl(nextUrl);
-      setRightView('pdf');
       setStatus(t('编译完成 ({{engine}})', { engine: result.engine }));
     } catch (err) {
       console.error('Compilation error:', err);
-      setCompileLog(`${t('编译错误: {{error}}', { error: String(err) })}\n${(err as Error).stack || ''}`);
+      const log = t('编译错误: {{error}}', { error: String(err) });
+      views.set(target, { url: views.get(target)?.url ?? '', log, engine: views.get(target)?.engine ?? '' });
+      if (stillViewing()) {
+        setCompileLog(log);
+        setRightView('log'); // otherwise the previous PDF stays up and looks like this compile's result
+      }
       setStatus(t('编译失败: {{error}}', { error: String(err) }));
     } finally {
       setIsCompiling(false);
@@ -3496,26 +3694,39 @@ export default function EditorPage() {
     return Array.from(map.values());
   }, [pendingChanges]);
 
+  // Only the figures the .tex file being edited actually includes (through its \input files too).
   const figureFiles = useMemo(
-    () =>
-      tree.filter(
-        (item) =>
-          item.type === 'file' &&
-          FIGURE_EXTS.some((ext) => item.path.toLowerCase().endsWith(ext))
-      ),
-    [tree]
+    () => (docTree && docTree.tex === currentTex ? docTree.figures : []).map((path) => ({ path })),
+    [docTree, currentTex]
   );
 
   useEffect(() => {
-    if (!selectedFigure && figureFiles.length > 0) {
-      setSelectedFigure(figureFiles[0].path);
-    }
-  }, [figureFiles, selectedFigure]);
+    // Follow the current .tex file; a figure picked in the file tree is kept until the list changes.
+    setSelectedFigure((prev) => (figureFiles.some((item) => item.path === prev) ? prev : figureFiles[0]?.path ?? ''));
+  }, [figureFiles]);
 
   useEffect(() => {
     setPdfAnnotations([]);
-    setPdfOutline([]);
-  }, [pdfUrl]);
+    if (!pdfUrl) {
+      setPdfOutline([]);
+      return;
+    }
+    // Read the bookmarks here, not in the preview, so the contents follow the file even while the preview is hidden.
+    let cancelled = false;
+    const task = getDocument(pdfUrl);
+    task.promise
+      .then(async (pdf) => {
+        const items = await readPdfOutline(pdf, t('(untitled)'));
+        if (!cancelled) setPdfOutline(items);
+      })
+      .catch(() => {
+        if (!cancelled) setPdfOutline([]);
+      });
+    return () => {
+      cancelled = true;
+      void task.destroy();
+    };
+  }, [pdfUrl, t]);
 
   const pdfScaleLabel = useMemo(() => {
     if (pdfFitWidth) {
@@ -3538,6 +3749,21 @@ export default function EditorPage() {
     [clampPdfScale, pdfFitScale, pdfScale]
   );
 
+  /** Switch to the PDF and scroll to a page. The preview mounts only now, so wait for its pages to exist. */
+  const goToPdfPage = useCallback((page: number) => {
+    setRightView('pdf');
+    const started = performance.now();
+    const attempt = () => {
+      const target = pdfContainerRef.current?.querySelector(`.pdf-page[data-page-number="${page}"]`) as HTMLElement | null;
+      if (target) {
+        target.scrollIntoView({ block: 'start' });
+      } else if (performance.now() - started < 5000) {
+        requestAnimationFrame(attempt);
+      }
+    };
+    requestAnimationFrame(attempt);
+  }, []);
+
   const scrollToPdfPage = useCallback((page: number) => {
     const container = pdfContainerRef.current;
     if (!container || !page) return;
@@ -3545,10 +3771,6 @@ export default function EditorPage() {
     if (target) {
       target.scrollIntoView({ behavior: 'smooth', block: 'start' });
     }
-  }, []);
-
-  const handlePdfOutline = useCallback((items: { title: string; page?: number; level: number }[]) => {
-    setPdfOutline(items);
   }, []);
 
   const addPdfAnnotation = useCallback((page: number, x: number, y: number) => {
@@ -4067,7 +4289,7 @@ export default function EditorPage() {
     ...(texFiles.length > 0 ? texFiles : ['main.tex']).map<MenuEntry>((path) => ({
       label: path,
       checked: mainFile === path,
-      onSelect: () => setMainFile(path)
+      onSelect: () => chooseMainFile(path)
     })),
     { type: 'sep' },
     { label: t('保存'), icon: 'save', kbd: 'Ctrl S', onSelect: () => void saveActiveFile() },
@@ -4318,18 +4540,18 @@ export default function EditorPage() {
               <>
                 <PanelHeader title={t('Outline')} onCollapse={() => setLeftOpen(false)} collapseLabel={t('Collapse panel')} />
                 <div className="ed-panel-body">
-                  {mainFile && <div className="ed-panel-note">{mainFile}</div>}
-                  {mainFile && mainFile.toLowerCase().endsWith('.tex') ? (
-                    outlineItems.length > 0 ? (
+                  {currentTex && <div className="ed-panel-note">{currentTex}</div>}
+                  {currentTex ? (
+                    docTree && docTree.outline.length > 0 ? (
                       <div className="outline-list">
-                        {outlineItems.map((item, idx) => (
+                        {docTree.outline.map((item, idx) => (
                           <button
-                            key={`${item.pos}-${idx}`}
+                            key={`${item.file}-${item.pos}-${idx}`}
                             className={`outline-item level-${item.level}`}
                             onClick={() => {
                               const go = async () => {
-                                if (mainFile && activePath !== mainFile) {
-                                  await openFile(mainFile);
+                                if (activePath !== item.file) {
+                                  await openFile(item.file);
                                 }
                                 const view = cmViewRef.current;
                                 if (!view) return;
@@ -4341,7 +4563,7 @@ export default function EditorPage() {
                             }}
                           >
                             <span className="outline-title">{item.title}</span>
-                            <span className="outline-line">L{item.line}</span>
+                            <span className="outline-line">{item.file === currentTex ? `L${item.line}` : `${item.file.split('/').pop()}:${item.line}`}</span>
                           </button>
                         ))}
                       </div>
@@ -4568,7 +4790,6 @@ export default function EditorPage() {
                           fitWidth={pdfFitWidth}
                           spread={pdfSpread}
                           onFitScale={handleFitScale}
-                          onOutline={handlePdfOutline}
                           annotations={pdfAnnotations}
                           annotateMode={pdfAnnotateMode}
                           onAddAnnotation={addPdfAnnotation}
@@ -4634,10 +4855,7 @@ export default function EditorPage() {
                               key={`${item.title}-${idx}`}
                               className={`toc-item level-${item.level}`}
                               onClick={() => {
-                                if (item.page) {
-                                  setRightView('pdf');
-                                  scrollToPdfPage(item.page);
-                                }
+                                if (item.page) goToPdfPage(item.page);
                               }}
                             >
                               <span className="toc-title-text">{item.title}</span>
@@ -4656,7 +4874,7 @@ export default function EditorPage() {
                             ariaLabel={t('选择图片进行预览。')}
                             value={selectedFigure}
                             placeholder={t('选择图片进行预览。')}
-                            options={figureFiles.map((item) => ({ value: item.path, label: item.path }))}
+                            options={(selectedFigure && !figureFiles.some((item) => item.path === selectedFigure) ? [{ path: selectedFigure }, ...figureFiles] : figureFiles).map((item) => ({ value: item.path, label: item.path }))}
                             onChange={(v) => setSelectedFigure(v)}
                           />
                         </div>
@@ -4729,6 +4947,9 @@ export default function EditorPage() {
                           )}
                         </button>
                       </div>
+                      {compileErrors.length > 0 && (
+                        <div className="log-errors-head">{t('{{count}} errors', { count: compileErrors.length })}</div>
+                      )}
                       {compileErrors.length > 0 && (
                         <div className="log-errors">
                           {compileErrors.map((error, idx) => (
@@ -5762,7 +5983,7 @@ export default function EditorPage() {
                 className="op-input"
                 value={llmEndpoint}
                 onChange={(e) => setSettings((prev) => ({ ...prev, llmEndpoint: e.target.value }))}
-                placeholder="https://api.openai.com/v1/chat/completions"
+                placeholder={t('Server default')}
               />
               <div className="muted">{t('支持 OpenAI 兼容的 base_url，例如 https://api.apiyi.com/v1')}</div>
             </div>
@@ -5772,7 +5993,7 @@ export default function EditorPage() {
                 className="op-input"
                 value={llmModel}
                 onChange={(e) => setSettings((prev) => ({ ...prev, llmModel: e.target.value }))}
-                placeholder="gpt-4o-mini"
+                placeholder={t('Server default')}
               />
             </div>
             <div className="field">

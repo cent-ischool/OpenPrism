@@ -17,6 +17,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     latexmk biber \
     texlive-latex-recommended texlive-latex-extra texlive-fonts-recommended \
     texlive-science texlive-xetex texlive-luatex texlive-bibtex-extra \
+    texlive-publishers texlive-plain-generic texlive-fonts-extra \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 USER app
 CMD ["celery", "-A", "config", "worker", "-Q", "compile,transfer", "-l", "info", "--concurrency", "2"]
