@@ -19,6 +19,12 @@ if [ -z "${DJANGO_SECRET_KEY:-}" ]; then
   export DJANGO_SECRET_KEY
 fi
 
+# The platform's bucket is per deployment (app-<id>--openprism) and arrives as AWS_STORAGE_BUCKET_NAME, with its
+# region as AWS_S3_REGION_NAME. settings.py reads S3_BUCKET and S3_REGION, whose compose defaults (openprism,
+# garage) name a bucket that doesn't exist here.
+if [ -z "${S3_BUCKET:-}" ] && [ -n "${AWS_STORAGE_BUCKET_NAME:-}" ]; then export S3_BUCKET="$AWS_STORAGE_BUCKET_NAME"; fi
+if [ -z "${S3_REGION:-}" ] && [ -n "${AWS_S3_REGION_NAME:-}" ]; then export S3_REGION="$AWS_S3_REGION_NAME"; fi
+
 if [ -z "${S3_ACCESS_KEY_ID:-}${AWS_ACCESS_KEY_ID:-}" ]; then export S3_ACCESS_KEY_ID=unset; fi
 if [ -z "${S3_SECRET_ACCESS_KEY:-}${AWS_SECRET_ACCESS_KEY:-}" ]; then export S3_SECRET_ACCESS_KEY=unset; fi
 
