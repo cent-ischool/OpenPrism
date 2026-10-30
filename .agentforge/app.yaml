@@ -41,7 +41,7 @@ services:
     env: &api-env
       DJANGO_ALLOWED_HOSTS: "*"
       DJANGO_BEHIND_TLS_PROXY: "1"
-      TRUSTED_PROXY_COUNT: "2"   # the ingress, then nginx
+      TRUSTED_PROXY_COUNT: "3"   # the two ingress hops (as when api was exposed directly), then nginx
 
   # The workers have no port and no probe (the contract's health checks are HTTP); a crash restarts the pod.
   # OPENPRISM_LLM_* and OPENPRISM_MINERU_TOKEN are not set here: the AI and import features need them added as
