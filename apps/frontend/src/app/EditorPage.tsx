@@ -69,6 +69,7 @@ import {
 } from '@design';
 import type { IconName, MenuEntry, SegmentOption } from '@design';
 import './editor-shell.css';
+import { dropLegacyLlmDefaults } from './llmDefaults';
 
 GlobalWorkerOptions.workerSrc = pdfWorker;
 
@@ -207,9 +208,9 @@ function fileIconClass(path: string) {
 
 const SETTINGS_KEY = 'openprism-settings-v1';
 const DEFAULT_SETTINGS: AppSettings = {
-  llmEndpoint: 'https://api.openai.com/v1/chat/completions',
+  llmEndpoint: '',
   llmApiKey: '',
-  llmModel: 'gpt-4o-mini',
+  llmModel: '',
   searchEndpoint: '',
   searchApiKey: '',
   searchModel: '',
@@ -234,11 +235,11 @@ function loadSettings(): AppSettings {
       VALID_ENGINES.includes(engine as CompileEngine)
         ? (engine as CompileEngine)
         : DEFAULT_SETTINGS.compileEngine;
-    return {
+    return dropLegacyLlmDefaults({
       ...DEFAULT_SETTINGS,
       ...parsed,
       compileEngine
-    };
+    });
   } catch {
     return DEFAULT_SETTINGS;
   }
@@ -291,6 +292,13 @@ function normalizeServerUrl(value: string) {
 
 const FIGURE_EXTS = ['.png', '.jpg', '.jpeg', '.pdf', '.svg', '.eps'];
 const TEXT_EXTS = ['.sty', '.cls', '.bst', '.txt', '.md', '.json', '.yaml', '.yml', '.csv', '.tsv'];
+
+// A file that can be compiled on its own (as opposed to a section pulled in with \input).
+function isRootDocument(text: string) {
+  return /^[ \t]*\\documentclass\b/m.test(text);
+}
+
+const mainFileKey = (projectId: string) => `openprism-main-file:${projectId}`;
 
 function isTextPath(filePath: string) {
   const lower = filePath.toLowerCase();
@@ -999,6 +1007,8 @@ function parseCompileErrors(log: string): CompileError[] {
     }
     if (line.startsWith('!')) {
       const message = line.replace(/^!+\s*/, '').trim();
+      // Follow-on noise from the first real error; the log below still has it.
+      if (/^(Emergency stop|==> Fatal error)/.test(message)) continue;
       let lineNo: number | undefined;
       for (let j = i + 1; j < Math.min(i + 4, lines.length); j += 1) {
         const match = lines[j].match(/l\.(\d+)/);
@@ -3122,10 +3132,18 @@ export default function EditorPage() {
   useEffect(() => {
     if (texFiles.length === 0) return;
     if (!texFiles.includes(mainFile)) {
-      const preferred = texFiles.find((path) => path.endsWith('main.tex')) || texFiles[0];
+      let remembered: string | null = null;
+      try { remembered = window.localStorage.getItem(mainFileKey(projectId)); } catch { /* storage unavailable */ }
+      const preferred = (remembered && texFiles.includes(remembered) ? remembered : null)
+        || texFiles.find((path) => path.endsWith('main.tex')) || texFiles[0];
       setMainFile(preferred);
     }
-  }, [texFiles, mainFile]);
+  }, [texFiles, mainFile, projectId]);
+
+  const chooseMainFile = useCallback((path: string) => {
+    setMainFile(path);
+    try { window.localStorage.setItem(mainFileKey(projectId), path); } catch { /* storage unavailable */ }
+  }, [projectId]);
 
   useEffect(() => {
     if (citeTargetFile) return;
@@ -3419,6 +3437,15 @@ export default function EditorPage() {
     setIsCompiling(true);
     setStatus(t('编译中...'));
     try {
+      // The server compiles what is saved; autosave waits 1.5 s, so write the open file now.
+      if (!collabActiveRef.current && isDirty && activePath) {
+        await writeFile(projectId, activePath, editorValue);
+        setIsDirty(false);
+      }
+      // Compile the open file if it is a complete document; a section (\input'd file) compiles via the main file.
+      const target = activePath && activePath.toLowerCase().endsWith('.tex') && isRootDocument(editorValue)
+        ? activePath
+        : mainFile;
       const { files: serverFiles } = await getAllFiles(projectId);
       const fileMap: Record<string, string | Uint8Array> = {};
       for (const file of serverFiles) {
@@ -3432,8 +3459,8 @@ export default function EditorPage() {
       if (activePath) {
         fileMap[activePath] = editorValue;
       }
-      if (!fileMap[mainFile]) {
-        throw new Error(t('主文件不存在: {{file}}', { file: mainFile }));
+      if (!fileMap[target]) {
+        throw new Error(t('主文件不存在: {{file}}', { file: target }));
       }
       // Compiling reads the saved project, so in a live session save it first: otherwise the last words typed are
       // missing from the PDF and the caret's line number may no longer match what was compiled.
@@ -3444,7 +3471,7 @@ export default function EditorPage() {
       const focus = view && activePath && isTextPath(activePath)
         ? { file: activePath, line: view.state.doc.lineAt(view.state.selection.main.head).number }
         : undefined;
-      const res = await compileProject({ projectId, mainFile, engine: compileEngine, focus }, (message) => setStatus(message));
+      const res = await compileProject({ projectId, mainFile: target, engine: compileEngine, focus }, (message) => setStatus(message));
       if (!res.ok || !res.pdf) {
         const detail = [res.error, res.log].filter(Boolean).join('\n');
         throw new Error(detail || t('后端编译失败'));
@@ -3458,7 +3485,7 @@ export default function EditorPage() {
 
       const meta = [
         t('Engine: {{engine}}', { engine: compileEngine }),
-        t('Main file: {{file}}', { file: mainFile })
+        t('Main file: {{file}}', { file: target })
       ].filter(Boolean).join('\n');
       setEngineName(compileEngine);
       setCompileLog(`${meta}\n\n${result.log || t('No log')}`.trim());
@@ -4067,7 +4094,7 @@ export default function EditorPage() {
     ...(texFiles.length > 0 ? texFiles : ['main.tex']).map<MenuEntry>((path) => ({
       label: path,
       checked: mainFile === path,
-      onSelect: () => setMainFile(path)
+      onSelect: () => chooseMainFile(path)
     })),
     { type: 'sep' },
     { label: t('保存'), icon: 'save', kbd: 'Ctrl S', onSelect: () => void saveActiveFile() },
@@ -4729,6 +4756,9 @@ export default function EditorPage() {
                           )}
                         </button>
                       </div>
+                      {compileErrors.length > 0 && (
+                        <div className="log-errors-head">{t('{{count}} errors', { count: compileErrors.length })}</div>
+                      )}
                       {compileErrors.length > 0 && (
                         <div className="log-errors">
                           {compileErrors.map((error, idx) => (
@@ -5762,7 +5792,7 @@ export default function EditorPage() {
                 className="op-input"
                 value={llmEndpoint}
                 onChange={(e) => setSettings((prev) => ({ ...prev, llmEndpoint: e.target.value }))}
-                placeholder="https://api.openai.com/v1/chat/completions"
+                placeholder={t('Server default')}
               />
               <div className="muted">{t('支持 OpenAI 兼容的 base_url，例如 https://api.apiyi.com/v1')}</div>
             </div>
@@ -5772,7 +5802,7 @@ export default function EditorPage() {
                 className="op-input"
                 value={llmModel}
                 onChange={(e) => setSettings((prev) => ({ ...prev, llmModel: e.target.value }))}
-                placeholder="gpt-4o-mini"
+                placeholder={t('Server default')}
               />
             </div>
             <div className="field">

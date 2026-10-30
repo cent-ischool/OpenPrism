@@ -45,7 +45,14 @@ def chat_raw(messages, cfg=None, tools=None, temperature=0.2):
         assert_public_url(url)
     except BlockedEndpoint as exc:
         return {'ok': False, 'error': str(exc)}
-    body = {'model': c['model'], 'messages': messages, 'temperature': temperature}
+    body = {'model': c['model'], 'messages': messages}
+    # Some reasoning models accept only the default temperature; OPENPRISM_LLM_TEMPERATURE=default omits it.
+    if os.environ.get('OPENPRISM_LLM_TEMPERATURE', '').strip().lower() != 'default':
+        body['temperature'] = temperature
+    # e.g. gpt-6-luna refuses function tools unless reasoning_effort is 'none'.
+    effort = os.environ.get('OPENPRISM_LLM_REASONING_EFFORT', '').strip()
+    if effort:
+        body['reasoning_effort'] = effort
     if tools:
         body['tools'] = tools
     try:

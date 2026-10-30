@@ -16,6 +16,7 @@ import type {
 } from '../api/client';
 import { Badge, Button, Icon, SegmentedControl, Select } from '@design';
 import type { BadgeTone, SelectOption } from '@design';
+import { dropLegacyLlmDefaults } from './llmDefaults';
 
 interface TransferPanelProps {
   projectId: string;
@@ -51,7 +52,7 @@ export default function TransferPanel({ projectId, onJobUpdate }: TransferPanelP
       const raw = window.localStorage.getItem(SETTINGS_KEY);
       if (!raw) return { llmEndpoint: '', llmApiKey: '', llmModel: '' };
       const p = JSON.parse(raw);
-      return { llmEndpoint: p.llmEndpoint || '', llmApiKey: p.llmApiKey || '', llmModel: p.llmModel || '' };
+      return dropLegacyLlmDefaults({ llmEndpoint: p.llmEndpoint || '', llmApiKey: p.llmApiKey || '', llmModel: p.llmModel || '' });
     } catch { return { llmEndpoint: '', llmApiKey: '', llmModel: '' }; }
   };
 

@@ -37,6 +37,7 @@ import {
 } from '@design';
 import type { BadgeTone, IconName, MenuEntry, SelectOption, Workspace, WorkspaceRole } from '@design';
 import './pages.css';
+import { dropLegacyLlmDefaults } from './llmDefaults';
 
 type ViewFilter = 'all' | 'mine' | 'archived' | 'trash';
 type SortBy = 'updatedAt' | 'name' | 'createdAt';
@@ -56,9 +57,9 @@ interface LLMSettings {
 }
 
 const DEFAULT_LLM: LLMSettings = {
-  llmEndpoint: 'https://api.openai.com/v1/chat/completions',
+  llmEndpoint: '',
   llmApiKey: '',
-  llmModel: 'gpt-4o-mini',
+  llmModel: '',
 };
 
 function loadLLMSettings(): LLMSettings {
@@ -66,11 +67,11 @@ function loadLLMSettings(): LLMSettings {
     const raw = window.localStorage.getItem(SETTINGS_KEY);
     if (!raw) return DEFAULT_LLM;
     const parsed = JSON.parse(raw);
-    return {
+    return dropLegacyLlmDefaults({
       llmEndpoint: parsed.llmEndpoint ?? DEFAULT_LLM.llmEndpoint,
       llmApiKey: parsed.llmApiKey ?? DEFAULT_LLM.llmApiKey,
       llmModel: parsed.llmModel ?? DEFAULT_LLM.llmModel,
-    };
+    });
   } catch {
     return DEFAULT_LLM;
   }
@@ -1634,7 +1635,7 @@ export default function ProjectPage() {
               className="op-input"
               type="text"
               autoComplete="off"
-              placeholder="https://api.openai.com/v1/chat/completions"
+              placeholder={t('Server default')}
               value={settingsForm.llmEndpoint}
               onChange={(e) => setSettingsForm((p) => ({ ...p, llmEndpoint: e.target.value }))}
             />
@@ -1658,7 +1659,7 @@ export default function ProjectPage() {
               className="op-input"
               type="text"
               autoComplete="off"
-              placeholder="gpt-4o"
+              placeholder={t('Server default')}
               value={settingsForm.llmModel}
               onChange={(e) => setSettingsForm((p) => ({ ...p, llmModel: e.target.value }))}
             />
