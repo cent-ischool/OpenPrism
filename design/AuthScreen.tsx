@@ -73,6 +73,23 @@ export function ClosedSignup({ contactEmail, onSignIn }: { contactEmail: string 
   );
 }
 
+/** Shown instead of the sign-in form while the back end cannot sign anyone in (#189). */
+export function ServiceUnavailable({ onRetry, checking }: { onRetry: () => void; checking: boolean }) {
+  const { t } = useTranslation();
+  return (
+    <div className="op-signed-out">
+      <div className="op-signed-out-card">
+        <LogoMark size={40} />
+        <div style={{ display: 'grid', gap: 'var(--sp-1)' }}>
+          <h1>{t('Service unavailable at this time.')}</h1>
+          <p>{t('Open Prism cannot sign anyone in right now. Your work is safe. This page checks again by itself and shows the form as soon as the service is back.')}</p>
+        </div>
+        <Button variant="primary" block loading={checking} onClick={onRetry}>{t('Try again')}</Button>
+      </div>
+    </div>
+  );
+}
+
 export function AuthScreen({ mode, onModeChange, onSubmit, onSubmitCode, onPasskey, socialProviders, onSocial, startAtCode = false, initialError = null, notice, onForgotPassword, initialEmail = '', lockEmail = false, canRegister = true }: AuthScreenProps) {
   const { t } = useTranslation();
   const uid = useId();
