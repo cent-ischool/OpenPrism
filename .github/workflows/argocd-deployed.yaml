@@ -12,7 +12,7 @@ permissions:
 
 jobs:
   smoke:
-    runs-on: ubuntu-24.04
+    runs-on: ${{ github.repository_owner == 'cent-ischool' && 'arc-cent' || 'ubuntu-24.04' }}
     steps:
       - uses: actions/checkout@v4
       - name: Wait until the public URL serves the deployed release
