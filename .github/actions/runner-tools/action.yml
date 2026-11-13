@@ -1,0 +1,52 @@
+name: Runner tools
+description: >-
+  Installs what the org's ARC runner image (ghcr.io/actions/actions-runner, a bare Ubuntu 24.04) lacks but a
+  GitHub-hosted runner already has. Does nothing on a GitHub-hosted runner.
+inputs:
+  tools:
+    description: "Space-separated: compose gh shellcheck pyyaml kubectl helm"
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: apt packages
+      if: runner.environment != 'github-hosted'
+      shell: bash
+      env:
+        TOOLS: ${{ inputs.tools }}
+      run: |
+        set -euo pipefail
+        pkgs=()
+        for t in $TOOLS; do
+          case "$t" in
+            gh) pkgs+=(gh) ;;
+            shellcheck) pkgs+=(shellcheck) ;;
+            pyyaml) pkgs+=(python3-yaml) ;;
+          esac
+        done
+        if [ "${#pkgs[@]}" -gt 0 ]; then
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends "${pkgs[@]}"
+        fi
+    - name: docker compose plugin (checked against the release's published checksum)
+      if: runner.environment != 'github-hosted' && contains(format(' {0} ', inputs.tools), ' compose ')
+      shell: bash
+      env:
+        COMPOSE_VERSION: v2.29.7
+      run: |
+        set -euo pipefail
+        docker compose version >/dev/null 2>&1 && exit 0
+        base="https://github.com/docker/compose/releases/download/$COMPOSE_VERSION"
+        dir="$HOME/.docker/cli-plugins"; mkdir -p "$dir"; cd "$RUNNER_TEMP"
+        curl -sSfLO "$base/docker-compose-linux-x86_64"
+        curl -sSfLO "$base/docker-compose-linux-x86_64.sha256"
+        sha256sum -c docker-compose-linux-x86_64.sha256
+        install -m 755 docker-compose-linux-x86_64 "$dir/docker-compose"
+        docker compose version
+    - name: kubectl
+      if: runner.environment != 'github-hosted' && contains(format(' {0} ', inputs.tools), ' kubectl ')
+      uses: azure/setup-kubectl@v4
+    - name: helm
+      if: runner.environment != 'github-hosted' && contains(format(' {0} ', inputs.tools), ' helm ')
+      uses: azure/setup-helm@v4
+      with: {version: v3.16.4}

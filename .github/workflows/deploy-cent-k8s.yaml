@@ -6,7 +6,8 @@ run-name: ${{ github.actor }} is releasing ${{ github.ref_name }}
 # workflow_dispatch re-deploys an existing release without rebuilding it: give `tag` (its images must already exist)
 # and leave `build` off. Chart, scripts and this workflow come from the ref you run it on.
 #
-# Runs on the cluster's self-hosted runner (the repo is public, so this workflow must never run on pull_request).
+# Runs on the org's ARC runners (`arc-cent`, pods in the cent cluster; the repo is public, so this workflow must never
+# run on pull_request).
 on:
   push:
     tags:
@@ -43,7 +44,7 @@ env:
 jobs:
   check:
     name: Check the tag
-    runs-on: [self-hosted, linux, cent]
+    runs-on: ${{ github.repository_owner == 'cent-ischool' && 'arc-cent' || 'ubuntu-24.04' }}
     outputs:
       tag: ${{ steps.v.outputs.tag }}
       version: ${{ steps.v.outputs.version }}
@@ -85,7 +86,7 @@ jobs:
     needs: [check]
     # A redeploy of an existing tag (build off) skips this whole job.
     if: ${{ github.event_name == 'push' || inputs.build }}
-    runs-on: [self-hosted, linux, cent]
+    runs-on: ${{ github.repository_owner == 'cent-ischool' && 'arc-cent' || 'ubuntu-24.04' }}
     strategy:
       # The runner is one shared machine with a finite disk (the TeX image alone is ~6 GB, #69): build one image at a
       # time, and do not let one failed push cancel the slow build of another.
@@ -103,9 +104,12 @@ jobs:
 
       - name: Check free disk space on the runner
         run: |
+          # On the ARC runner Docker's data root is in the dind sidecar, not in this container; both sit on the node's
+          # disk (emptyDir), so the work directory's free space is the one that counts.
           root="$(docker info --format '{{.DockerRootDir}}')"
+          [ -d "$root" ] || root="$GITHUB_WORKSPACE"
           free_gb="$(df -BG --output=avail "$root" | tail -1 | tr -dc '0-9')"
-          echo "Docker data root $root has ${free_gb} GB free"
+          echo "$root has ${free_gb} GB free"
           docker system df || true
           if [ "$free_gb" -lt 12 ]; then
             echo "::error::Only ${free_gb} GB free under $root; the images need about 12 GB. Free space on the runner (docker image prune, old _work directories) and re-run."
@@ -143,7 +147,7 @@ jobs:
     name: Open the Deploy pull request (Argo CD)
     needs: [check, build]
     if: ${{ !cancelled() && vars.DEPLOY_WITH_ARGOCD == 'true' && needs.check.result == 'success' && (needs.build.result == 'success' || needs.build.result == 'skipped') }}
-    runs-on: ubuntu-24.04
+    runs-on: ${{ github.repository_owner == 'cent-ischool' && 'arc-cent' || 'ubuntu-24.04' }}
     permissions: {contents: write, pull-requests: write}
     env:
       TAG: ${{ needs.check.outputs.tag }}
@@ -151,6 +155,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with: {ref: main}
+      - uses: ./.github/actions/runner-tools
+        with: {tools: gh}
       - name: Point the Application at the tag and open the pull request
         run: |
           set -euo pipefail
@@ -174,7 +180,7 @@ jobs:
     # build is skipped on a redeploy; any other result than success or skipped stops the deploy.
     # Not once Argo CD deploys (DEPLOY_WITH_ARGOCD): then the cluster pulls from git and this job must not push to it.
     if: ${{ !cancelled() && vars.DEPLOY_WITH_ARGOCD != 'true' && needs.check.result == 'success' && (needs.build.result == 'success' || needs.build.result == 'skipped') }}
-    runs-on: [self-hosted, linux, cent]
+    runs-on: ${{ github.repository_owner == 'cent-ischool' && 'arc-cent' || 'ubuntu-24.04' }}
     env:
       VERSION: ${{ needs.check.outputs.version }}
       TAG: ${{ needs.check.outputs.tag }}
@@ -188,6 +194,9 @@ jobs:
           filename: ${{ env.KUBE_CONFIG }}
           is-executable: false
           working-directory: "."
+
+      - uses: ./.github/actions/runner-tools
+        with: {tools: kubectl helm}
 
       - name: Smoke-test cluster access
         run: kubectl --kubeconfig=./${{ env.KUBE_CONFIG }} cluster-info
