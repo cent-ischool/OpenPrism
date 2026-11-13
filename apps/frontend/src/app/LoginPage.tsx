@@ -1,9 +1,9 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { AuthScreen, ClosedSignup } from '@design';
+import { AuthScreen, ClosedSignup, ServiceUnavailable } from '@design';
 import type { AuthMode, AuthValues } from '@design';
-import { fetchPublicConfig, passkeysSupported, startSocialLogin, type PublicConfig } from '../api/client';
+import { fetchPublicConfig, passkeysSupported, signInAvailable, startSocialLogin, type PublicConfig } from '../api/client';
 import { useAuth } from '../auth/AuthProvider';
 
 /** Only follow same-site paths after sign-in (prevents `?next=https://evil.example` open redirects). */
@@ -26,6 +26,23 @@ export default function LoginPage() {
   const next = safeNext(params.get('next'));
   const [config, setConfig] = useState<PublicConfig | null>(null);
   useEffect(() => { void fetchPublicConfig().then(setConfig); }, []);
+  // Check the back end before offering the form (#189): a person should not type a password into a page that can only
+  // fail. While it is down, check again every 15 s and show the form as soon as it is back.
+  const [available, setAvailable] = useState<boolean | null>(null);
+  const [checking, setChecking] = useState(false);
+  const recheck = useCallback(async () => {
+    setChecking(true);
+    const up = await signInAvailable();
+    setChecking(false);
+    setAvailable(up);
+    if (up) setConfig(await fetchPublicConfig());   // the config may have fallen back while the API was down
+  }, []);
+  useEffect(() => { void recheck(); }, [recheck]);
+  useEffect(() => {
+    if (available !== false) return;
+    const timer = window.setInterval(() => { void recheck(); }, 15_000);
+    return () => window.clearInterval(timer);
+  }, [available, recheck]);
   useEffect(() => {   // the ticket and the error code are for this load only
     const q = new URLSearchParams(window.location.search);
     if (q.has('mfa') || q.has('error')) {
@@ -57,7 +74,8 @@ export default function LoginPage() {
     // The app swaps to the signed-in routes, which send /login on to `next`.
   };
 
-  if (!config) return null;   // the page differs by registration mode: wait for it rather than flash the wrong one
+  if (available === false) return <ServiceUnavailable onRetry={() => void recheck()} checking={checking} />;
+  if (!config || available === null) return null;   // the page differs by registration mode: wait for it rather than flash the wrong one
   if (mode === 'register' && byInvitation && !invite && !params.get('invited')) {
     return <ClosedSignup contactEmail={config.contactEmail} onSignIn={() => navigate(`/login${qs}`, { replace: true })} />;
   }

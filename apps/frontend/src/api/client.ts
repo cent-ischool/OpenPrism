@@ -997,6 +997,18 @@ export interface PublicConfig {
   socialProviders?: { name: string; label: string }[];
 }
 
+/** Can the back end sign people in right now (#189)? Signing in needs the API, Postgres and Redis; S3 or a worker
+ * being down does not stop it. No answer, or a proxy's error page, counts as unavailable. */
+export async function signInAvailable(): Promise<boolean> {
+  try {
+    const res = await fetch('/api/status', { cache: 'no-store' });
+    const body = await res.json() as { services?: { postgres?: string; redis?: string } };
+    return body.services?.postgres === 'up' && body.services?.redis === 'up';
+  } catch {
+    return false;
+  }
+}
+
 let publicConfig: Promise<PublicConfig> | null = null;
 
 /** What the signed-out pages need (registration mode, contact address); fetched once per page load. */
