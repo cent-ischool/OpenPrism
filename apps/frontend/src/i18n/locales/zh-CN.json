@@ -1106,5 +1106,7 @@
   "Export project": "导出项目",
   "Preparing {{project}} for export…": "正在准备导出 {{project}}…",
   "Could not export {{project}}: {{error}}": "无法导出 {{project}}：{{error}}",
-  "Exporting {{project}} ({{count}} files)": "正在导出 {{project}}（{{count}} 个文件）"
+  "Exporting {{project}} ({{count}} files)": "正在导出 {{project}}（{{count}} 个文件）",
+  "Service unavailable at this time.": "服务暂时不可用。",
+  "Open Prism cannot sign anyone in right now. Your work is safe. This page checks again by itself and shows the form as soon as the service is back.": "Open Prism 目前无法登录。您的工作是安全的。本页面会自动重新检查，服务恢复后立即显示登录表单。"
 }
