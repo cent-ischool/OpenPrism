@@ -22,14 +22,18 @@ ARG TECTONIC_SHA256=8533d07f9ccbd7a65824b9e0459041bca34af1eb33daba48f59215593753
 # TeX Live 2022 packages: where tectonic's default bundle URL (relay.fullyjustified.net/default_bundle_v33.tar) leads.
 ARG TECTONIC_BUNDLE_URL=https://data1b.fullyjustified.net/tlextras-2022.0r0.tar
 ARG TECTONIC_BUNDLE_SHA256=425685e124746c15ba9bb8e0596bdaad98fce886afa347fbcf9ec0e9acd7fe79
+# Downloads retry instead of failing the build on one dropped connection (#201: on the ARC runners a connection to
+# GitHub's download servers sometimes never opened, and curl waited its default 5 minutes). A host that cannot be
+# reached fails after 5 tries of 30 s (about 3 minutes); a transfer below 1 KB/s for a minute is restarted.
+ARG FETCH="curl -fsSL --connect-timeout 30 --retry 4 --retry-delay 5 --retry-all-errors --speed-limit 1024 --speed-time 60"
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 RUN set -eu; mkdir -p /opt/tectonic/bin; \
-    curl -fsSL -o /tmp/tectonic.tar.gz "https://github.com/tectonic-typesetting/tectonic/releases/download/tectonic%40${TECTONIC_VERSION}/tectonic-${TECTONIC_VERSION}-x86_64-unknown-linux-musl.tar.gz"; \
+    ${FETCH} -o /tmp/tectonic.tar.gz "https://github.com/tectonic-typesetting/tectonic/releases/download/tectonic%40${TECTONIC_VERSION}/tectonic-${TECTONIC_VERSION}-x86_64-unknown-linux-musl.tar.gz"; \
     echo "${TECTONIC_SHA256}  /tmp/tectonic.tar.gz" | sha256sum -c -; \
     tar -xzf /tmp/tectonic.tar.gz -C /opt/tectonic/bin tectonic; rm /tmp/tectonic.tar.gz
 RUN set -eu; mkdir -p /opt/tectonic/bundle; \
-    curl -fsSL -o /tmp/bundle.tar "${TECTONIC_BUNDLE_URL}"; \
+    ${FETCH} -o /tmp/bundle.tar "${TECTONIC_BUNDLE_URL}"; \
     echo "${TECTONIC_BUNDLE_SHA256}  /tmp/bundle.tar" | sha256sum -c -; \
     tar -xf /tmp/bundle.tar -C /opt/tectonic/bundle --no-same-owner; rm /tmp/bundle.tar; \
     chmod -R a+rX,go-w /opt/tectonic/bundle
