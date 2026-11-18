@@ -25,9 +25,12 @@ env:
 
 jobs:
   bootstrap:
-    runs-on: [self-hosted, linux, cent]
+    runs-on: ${{ github.repository_owner == 'cent-ischool' && 'arc-cent' || 'ubuntu-24.04' }}
     steps:
       - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/runner-tools
+        with: {tools: kubectl}
 
       - name: Materialize kubeconfig from secret
         uses: mobiledevops/secret-to-file-action@v1

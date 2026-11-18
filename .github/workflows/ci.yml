@@ -14,9 +14,14 @@ concurrency:
 env:
   COMPOSE_PROJECT_NAME: openprism
 
+# Runners (#196). Runs by the cent-ischool org use the org's ARC runner scale set `arc-cent` (pods in the cent cluster,
+# Docker-in-Docker): every push (pushing needs write access to this repository) and every pull request from a branch of
+# this repository. The repository is public, so a pull request from a fork, and any run in a fork, gets GitHub-hosted
+# runners and never reaches the cluster. The ARC image is bare Ubuntu: .github/actions/runner-tools adds what it lacks.
+
 jobs:
   typecheck:
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.repository_owner == 'cent-ischool' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && 'arc-cent' || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -26,9 +31,11 @@ jobs:
 
   deploy-checks:
     # The Helm chart, the Caddy reference config and the deploy scripts: all static, none of it touches a cluster.
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.repository_owner == 'cent-ischool' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && 'arc-cent' || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@v4
+      - uses: ./.github/actions/runner-tools
+        with: {tools: pyyaml shellcheck}
       - uses: azure/setup-helm@v4
         with: {version: v3.16.4}
       - name: Lint and render the Helm chart
@@ -93,9 +100,11 @@ jobs:
           shellcheck -S warning deploy/bootstrap/*.sh deploy/smoke-release.sh deploy/diagnose.sh deploy/seal-secrets.sh
 
   api-tests:
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.repository_owner == 'cent-ischool' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && 'arc-cent' || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@v4
+      - uses: ./.github/actions/runner-tools
+        with: {tools: compose}
       - uses: ./.github/actions/stack
         with: {services: postgres redis garage api}
       - run: docker compose run --rm api python manage.py test --noinput
@@ -106,9 +115,11 @@ jobs:
         with: {name: api-tests-logs, path: compose.log}
 
   ai-tests:
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.repository_owner == 'cent-ischool' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && 'arc-cent' || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@v4
+      - uses: ./.github/actions/runner-tools
+        with: {tools: compose}
       - uses: ./.github/actions/stack
         with: {services: postgres redis garage api worker-ai}
       - run: docker compose run --rm worker-ai python manage.py test ai --noinput
@@ -123,15 +134,19 @@ jobs:
     if: >-
       github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/release/') ||
       (github.event_name == 'pull_request' && (github.base_ref == 'main' || startsWith(github.base_ref, 'release/')))
-    runs-on: ubuntu-24.04   # not ubuntu-latest: it is 26.04 now and Playwright 1.55 does not support it (#155)
+    # GitHub-hosted: ubuntu-24.04, not ubuntu-latest (26.04, which Playwright 1.55 does not support, #155)
+    runs-on: ${{ github.repository_owner == 'cent-ischool' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && 'arc-cent' || 'ubuntu-24.04' }}
     timeout-minutes: 90
     steps:
       - name: Free disk space for the TeX image
+        if: runner.environment == 'github-hosted'   # never delete anything on the self-hosted runner (#196)
         run: |
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL /usr/local/share/boost
           docker system prune -af >/dev/null
           df -h /
       - uses: actions/checkout@v4
+      - uses: ./.github/actions/runner-tools
+        with: {tools: compose}
       - uses: ./.github/actions/stack
         with: {services: postgres redis garage mailpit api worker-tex worker-ai beat web}
       - run: docker compose run --rm worker-tex python manage.py test jobs transfer --noinput
