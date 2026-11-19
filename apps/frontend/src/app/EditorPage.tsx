@@ -3585,20 +3585,12 @@ export default function EditorPage() {
         await writeFile(projectId, activePath, editorValue);
         setIsDirty(false);
       }
+      // The server compiles what is saved; this only checks that the file to build exists. Check the path, not the
+      // text: while the open file is still loading the editor's text is '' and the file would look missing (#206).
       const { files: serverFiles } = await getAllFiles(projectId);
-      const fileMap: Record<string, string | Uint8Array> = {};
-      for (const file of serverFiles) {
-        if (file.encoding === 'base64') {
-          const binary = Uint8Array.from(atob(file.content), (c) => c.charCodeAt(0));
-          fileMap[file.path] = binary;
-        } else {
-          fileMap[file.path] = files[file.path] ?? file.content;
-        }
-      }
-      if (activePath) {
-        fileMap[activePath] = editorValue;
-      }
-      if (!fileMap[target]) {
+      const paths = new Set(serverFiles.map((file) => file.path));
+      if (activePath) paths.add(activePath);
+      if (!paths.has(target)) {
         throw new Error(t('主文件不存在: {{file}}', { file: target }));
       }
       // Compiling reads the saved project, so in a live session save it first: otherwise the last words typed are

@@ -56,6 +56,27 @@ test.describe('what compile builds', () => {
     await expect(page.locator('.pdf-page .textLayer span', { hasText: 'Zebraword' }).first()).toBeVisible({ timeout: 30_000 });
   });
 
+  test('compiles when pressed while the open file is still loading (#206)', async ({ page }) => {
+    const session = await newAccount('loading');
+    const id = await newProject(session, 'Loading', { 'a.tex': doc('Alphadoc'), 'b.tex': doc('Betadoc') });
+    await signIn(page, session);
+    // Hold a.tex's text back from the first load on: clicking it makes it the open file at once, with an empty
+    // editor until the text arrives. The compile used to read that empty text as "Main file not found: a.tex".
+    await page.route(new RegExp(`/api/projects/${id}/file\\?path=a\\.tex`), async (route) => {
+      await new Promise((r) => setTimeout(r, 2500));
+      await route.continue();
+    });
+    const errors: string[] = [];
+    page.on('console', (m) => { if (m.type() === 'error') errors.push(m.text()); });
+    await page.goto(`/editor/${id}`);
+    await page.waitForSelector('.cm-editor');
+    await openFile(page, 'a.tex');
+    await page.locator('.cm-content').click();
+    expect(await compiledFile(page)).toBe('a.tex');
+    await expect(page.locator('.pdf-page .textLayer span', { hasText: 'Alphadoc' }).first()).toBeVisible({ timeout: 60_000 });
+    expect(errors.filter((e) => e.includes('Main file not found'))).toEqual([]);
+  });
+
   test('retries with XeLaTeX when the document needs fontspec, instead of leaving the old PDF', async ({ page }) => {
     const session = await newAccount('engine');
     const id = await newProject(session, 'Engine', {
