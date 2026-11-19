@@ -49,13 +49,20 @@ jobs:
           # services or Ingress, and no root credentials in the app.
           grep -q 'type: NodePort' /tmp/render.yaml
           grep -qE '^  name: api$' /tmp/render.yaml
-          ! grep -qE '^kind: (Ingress|StatefulSet|PersistentVolumeClaim)$' /tmp/render.yaml
-          ! grep -qiE 'POSTGRES_PASSWORD|MINIO_ROOT' /tmp/render.yaml
+          # Not `! grep`: bash's `set -e` ignores a negated command's status, so such a check never fails (#200).
+          if grep -qE '^kind: (Ingress|StatefulSet|PersistentVolumeClaim)$' /tmp/render.yaml; then
+            echo "::error::The chart renders an Ingress, StatefulSet or PersistentVolumeClaim"; exit 1
+          fi
+          if grep -qiE 'POSTGRES_PASSWORD|MINIO_ROOT' /tmp/render.yaml; then
+            echo "::error::The chart renders root database or object-store credentials"; exit 1
+          fi
           # The API's probes reach the pod by IP: they must send a Host that DJANGO_ALLOWED_HOSTS accepts (#74).
           [ "$(grep -c 'name: Host, value: api' /tmp/render.yaml)" -eq 3 ]
           grep -qE 'DJANGO_ALLOWED_HOSTS: "[^"]*,api"' /tmp/render.yaml
           # Required secrets are enforced when the chart renders them: missing ones fail, not render a broken release.
-          ! helm template openprism "$chart" -f "$chart/ci/test-values.yaml" --set secrets.DJANGO_SECRET_KEY= >/dev/null 2>&1
+          if helm template openprism "$chart" -f "$chart/ci/test-values.yaml" --set secrets.DJANGO_SECRET_KEY= >/dev/null 2>&1; then
+            echo "::error::The chart renders without DJANGO_SECRET_KEY"; exit 1
+          fi
           # No image tag: the images are the chart's own release (v + appVersion = apps/api/VERSION at the tag).
           helm template openprism "$chart" -f "$chart/ci/test-values.yaml" --set image.tag= \
             | grep -q "openprism/api:v$(tr -d '[:space:]' < apps/api/VERSION)$"
@@ -68,7 +75,9 @@ jobs:
           python3 -c "import json, yaml; a = yaml.safe_load(open('deploy/argocd/apps/openprism.yaml')); \
             print(json.dumps(a['spec']['sources'][0]['helm']['valuesObject']))" > /tmp/argo-values.json
           helm template openprism "$chart" -f /tmp/argo-values.json -n openprism > /tmp/argo.yaml
-          ! grep -qE '^kind: Secret$' /tmp/argo.yaml                       # no plaintext Secret is rendered
+          if grep -qE '^kind: Secret$' /tmp/argo.yaml; then                 # no plaintext Secret is rendered
+            echo "::error::The Argo CD render contains a plaintext Secret"; exit 1
+          fi
           grep -q 'argocd.argoproj.io/hook: Sync' /tmp/argo.yaml            # migrations are a Sync hook
           grep -q 'argocd.argoproj.io/hook: PostSync' /tmp/argo.yaml        # and the version check runs after
           [ "$(grep -c 'argocd.argoproj.io/sync-wave: "1"' /tmp/argo.yaml)" -eq 6 ]   # every Deployment after migrations
