@@ -5,7 +5,15 @@ name: CI
 
 on:
   push:
+  # The bot's own pull requests get no CI run (#178). The Deploy PR (deploy-cent-k8s.yaml) and the Re-seal PR
+  # (seal-secrets.yaml) are opened with the workflow's GITHUB_TOKEN, and GitHub holds a pull_request run started that
+  # way for a maintainer's approval; nobody gives it, so the run "failed" with no jobs when the PR merged. They change
+  # only these paths: the Deploy PR points the Application at a tag whose own CI already passed, and the sealed values
+  # are opaque. A PR that changes only these files gets no run either; the push to main after it merges still runs CI.
   pull_request:
+    paths-ignore:
+      - deploy/argocd/apps/openprism.yaml
+      - deploy/argocd/secrets/**
 
 concurrency:
   group: ci-${{ github.ref }}

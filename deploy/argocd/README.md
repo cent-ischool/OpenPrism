@@ -26,6 +26,12 @@ Argo CD sync: wave -1 settings ─► Sync hook: migrate (+ built-in templates) 
 
 - **Release:** bump `apps/api/VERSION` on the release branch, merge to `main`, tag. Review and merge the Deploy PR. The
   "Wait for the Argo CD deploy" workflow goes green when `/api/health` reports the version.
+- **No CI on the bot's pull requests** (#178): the Deploy PR and the Re-seal PR are opened with the workflow's
+  `GITHUB_TOKEN`, and GitHub holds a `pull_request` run started that way for a maintainer's approval, which ended as a
+  failed run with no jobs ("likely a workflow file issue") once the PR merged. `ci.yml` therefore ignores pull requests
+  that change only `deploy/argocd/apps/openprism.yaml` or `deploy/argocd/secrets/**`. The Deploy PR names a tag whose
+  CI already passed, and CI runs on `main` after the merge. A hand-made PR that touches only those files gets no run
+  either, so let CI on `main` check it, or touch another file.
 - **Rotate a secret:** change the GitHub repository secret, run **Seal secrets** (Actions, give a reason), merge its PR.
   The pods roll because `secrets.revision` changed. The rest of the procedure is in `deploy/helm/README.md`, "Secrets".
 - **A failed sync:** a failing migration stops the sync before any Deployment changes, so the running version keeps
