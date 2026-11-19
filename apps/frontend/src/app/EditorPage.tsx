@@ -1571,6 +1571,20 @@ export default function EditorPage() {
   const collabCompartment = useMemo(() => new Compartment(), []);
   const readOnlyCompartment = useMemo(() => new Compartment(), []);
   const canWriteRef = useRef(false); // read when the editor view is (re)created
+  // True while a clicked file is being fetched: the editor still shows the previous file, and keys typed into it
+  // would be saved under the new file's name (#212).
+  const fileLoadingRef = useRef(false);
+  // Compiles pressed while a file loads wait here until the render that shows the file (see the effect below).
+  const fileLoadWaitersRef = useRef<Array<() => void>>([]);
+  const releaseFileLoadWaiters = () => {
+    const waiters = fileLoadWaitersRef.current;
+    fileLoadWaitersRef.current = [];
+    waiters.forEach((resolve) => resolve());
+  };
+  const editorLocked = () => !canWriteRef.current || fileLoadingRef.current;
+  const applyEditorLock = () => {
+    cmViewRef.current?.dispatch({ effects: readOnlyCompartment.reconfigure(editorLocked() ? [EditorState.readOnly.of(true), EditorView.editable.of(false)] : []) });
+  };
 
   const { compileEngine } = settings;
 
@@ -1978,7 +1992,7 @@ export default function EditorPage() {
         collabCompartment.of([]),
         commentMarksField,
         commentClicks((id) => openThreadRef.current(id)),
-        readOnlyCompartment.of(canWriteRef.current ? [] : [EditorState.readOnly.of(true), EditorView.editable.of(false)]),
+        readOnlyCompartment.of(editorLocked() ? [EditorState.readOnly.of(true), EditorView.editable.of(false)] : []),
         ghostField,
         search(),
         autocompletion({
@@ -2042,6 +2056,10 @@ export default function EditorPage() {
       });
     }
     if (!fresh && Object.prototype.hasOwnProperty.call(files, filePath)) {
+      if (fileLoadingRef.current) { // an earlier click is still loading; this file is here already
+        fileLoadingRef.current = false;
+        applyEditorLock();
+      }
       const cached = files[filePath] ?? '';
       const collabTextFile = collabEnabled && isTextPath(filePath);
       setEditorValue(collabTextFile ? '' : cached);
@@ -2051,8 +2069,24 @@ export default function EditorPage() {
       }
       return cached;
     }
-    const data = await getFile(projectId, filePath);
+    // Lock the editor before the first await, so no key pressed after the click reaches the previous file's text.
+    fileLoadingRef.current = true;
+    applyEditorLock();
+    let data: Awaited<ReturnType<typeof getFile>>;
+    try {
+      data = await getFile(projectId, filePath);
+    } catch (err) {
+      releaseFileLoadWaiters(); // nothing will render the file; let a waiting compile go ahead with what there is
+      throw err;
+    } finally {
+      if (activePathRef.current === filePath) {
+        fileLoadingRef.current = false;
+        applyEditorLock();
+      }
+    }
     setFiles((prev) => ({ ...prev, [filePath]: data.content }));
+    // Another file was clicked while this one loaded: keep the text for later, but do not show it under that name.
+    if (activePathRef.current !== filePath) return data.content;
     const collabTextFile = collabEnabled && isTextPath(filePath);
     setEditorValue(collabTextFile ? '' : data.content);
     setIsDirty(false);
@@ -3201,7 +3235,9 @@ export default function EditorPage() {
   }, [activePath]);
 
   const knownPaths = useMemo(() => new Set(tree.filter((item) => item.type === 'file').map((item) => item.path)), [tree]);
-  const liveTex = activePath === currentTex ? editorValue : null; // unsaved text of the file being edited
+  // Unsaved text of the file being edited. Not while it loads: the editor then still holds the previous file's text,
+  // and an outline built from it would call a section a complete document (#212).
+  const liveTex = activePath === currentTex && !fileLoadingRef.current ? editorValue : null;
   useEffect(() => {
     if (!currentTex) {
       setDocTree(null);
@@ -3270,6 +3306,9 @@ export default function EditorPage() {
       ? docTree.root
       : liveTex !== null && isRootDocument(liveTex) ? currentTex : mainFile;
   viewTargetRef.current = viewTarget;
+  useEffect(() => {
+    if (!fileLoadingRef.current) releaseFileLoadWaiters(); // this render shows the loaded file, compile may read it
+  });
   useEffect(() => {
     const shown = compiledViewsRef.current.get(viewTarget);
     pdfFocusRef.current = null;
@@ -3567,8 +3606,14 @@ export default function EditorPage() {
       );
     });
 
-  const compile = async () => {
+  const compile = async (): Promise<void> => {
     if (!projectId) return;
+    if (fileLoadingRef.current) {
+      // Pressed while a clicked file is still loading: the editor still holds the previous file's text, which would
+      // pick the wrong document to build. Compile once the file is shown, with that render's state (#212).
+      await new Promise<void>((resolve) => fileLoadWaitersRef.current.push(resolve));
+      return compileRef.current();
+    }
     // Where the reader is right now, before any await: if the preview has moved by the time the PDF arrives, the
     // reader scrolled it themselves and must not be pulled to the caret's position.
     pdfScrollAtCompileRef.current = pdfContainerRef.current?.scrollTop ?? 0;
@@ -4050,9 +4095,8 @@ export default function EditorPage() {
   // People who cannot write (viewers, viewer links) get a read-only editor; the server drops their edits anyway.
   useEffect(() => {
     canWriteRef.current = canWrite;
-    cmViewRef.current?.dispatch({
-      effects: readOnlyCompartment.reconfigure(canWrite ? [] : [EditorState.readOnly.of(true), EditorView.editable.of(false)])
-    });
+    applyEditorLock();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [canWrite, readOnlyCompartment]);
 
   const loadComments = useCallback(async () => {
