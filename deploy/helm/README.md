@@ -85,6 +85,8 @@ workflow must never gain a `pull_request` trigger.
    as its own pod with its logs (with `OnFailure` the Job controller deleted the single pod when its 900 s deadline passed,
    which hid the error in the v0.1.5 deploy, #152); `diagnose.sh` prints the Job's status and events and every attempt's logs.
    Get them later with `kubectl -n openprism logs -l app.kubernetes.io/name=migrate --tail=100`.
+   This is the Helm path. Releases deploy through Argo CD since v0.1.8; what a failing migration does there (verified on
+   the cluster, #152) is in `deploy/argocd/README.md`, *A failed sync*.
    The rollback does not use `--wait` (#153): it re-creates the previous revision's migrate Job, and waiting for that Job
    turned a failing database into a failed rollback too (v0.1.5: revisions 5 and 6 both `failed`, the API without ready
    pods). Instead the step checks `rollout status` of every Deployment. A release left in `failed` is not a problem for
