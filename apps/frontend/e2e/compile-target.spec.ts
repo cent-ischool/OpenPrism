@@ -46,6 +46,7 @@ test.describe('what compile builds', () => {
   test('includes what was typed a moment ago, before autosave fires', async ({ page }) => {
     await openProject(page);
     await openFile(page, 'b.tex');
+    await expect(page.locator('.cm-content')).toContainText('Betadoc'); // keys sent while it loads change nothing (#212)
     await page.locator('.cm-content').click();
     await page.keyboard.press('Control+End');
     await page.keyboard.press('ArrowUp');
