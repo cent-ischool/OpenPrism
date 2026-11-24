@@ -26,11 +26,36 @@ Argo CD sync: wave -1 settings ─► Sync hook: migrate (+ built-in templates) 
 
 - **Release:** bump `apps/api/VERSION` on the release branch, merge to `main`, tag. Review and merge the Deploy PR. The
   "Wait for the Argo CD deploy" workflow goes green when `/api/health` reports the version.
+- **No CI on the bot's pull requests** (#178): the Deploy PR and the Re-seal PR are opened with the workflow's
+  `GITHUB_TOKEN`, and GitHub holds a `pull_request` run started that way for a maintainer's approval, which ended as a
+  failed run with no jobs ("likely a workflow file issue") once the PR merged. `ci.yml` therefore ignores pull requests
+  that change only `deploy/argocd/apps/openprism.yaml` or `deploy/argocd/secrets/**`. The Deploy PR names a tag whose
+  CI already passed, and CI runs on `main` after the merge. A hand-made PR that touches only those files gets no run
+  either, so let CI on `main` check it, or touch another file.
 - **Rotate a secret:** change the GitHub repository secret, run **Seal secrets** (Actions, give a reason), merge its PR.
   The pods roll because `secrets.revision` changed. The rest of the procedure is in `deploy/helm/README.md`, "Secrets".
-- **A failed sync:** a failing migration stops the sync before any Deployment changes, so the running version keeps
-  serving. The hook's pod and logs stay until the next sync: `kubectl -n openprism logs job/migrate`. Fix forward, or
-  revert the Deploy PR (that is the rollback).
+- **A failed sync** (tried on the cent cluster on 2026-11-23 in a scratch namespace with Argo CD 3.6.1, #152; the failing
+  release also changed every pod template, so it would have rolled them all):
+  - **The running version keeps serving.** The migrate hook is wave 0 and the Deployments wave 1, so the sync stops
+    before any Deployment changes: same ReplicaSets, every replica Ready, `/readyz` 200 with the old version, for the
+    whole hour it was watched. The ConfigMap and Services are applied in the same sync before the hook fails, so a pod
+    that restarts meanwhile starts with the new release's settings.
+  - **Argo CD retries first.** The operation stays `Running` ("Retrying attempt #N") for about five minutes: each of
+    5 retries deletes the previous migrate Job (`BeforeHookCreation`) and makes a new one, which fails 4 times
+    (`backoffLimit: 3`, `restartPolicy: Never`). Then the app shows `OutOfSync` / `Healthy`, last sync `Failed`, and
+    the last Job is left alone.
+  - **The error stays readable** without having watched it: the last Job and its 4 pods stayed (still there after 65
+    minutes; the Job's TTL is 24 h, and the next sync replaces it). Read it with
+    `kubectl -n openprism logs job/migrate` (one attempt) or every attempt with
+    `kubectl -n openprism logs -l app.kubernetes.io/name=migrate --prefix --tail=50`, and
+    `argocd app get openprism --core` or `kubectl -n argocd get application openprism -o jsonpath='{.status.operationState.message}'`
+    for Argo CD's side.
+  - **Rollback = revert the Deploy PR** (or fix forward). Argo CD picks the revert up on its next poll (within a few
+    minutes) with no `kubectl` by hand. When the failed sync changed nothing that the revert has to undo (Deployments
+    are never reached; only a changed ConfigMap or Service would differ), git already matches the cluster: the app
+    turns `Synced` / `Healthy` without a new sync, so **no migrate Job runs and the failed Job stays** (last sync still
+    reads `Failed`) until the next release replaces it. If the failed release changed the ConfigMap, the revert is a
+    real sync and runs the old release's migrate hook again.
 - **Look at it:** `kubectl -n argocd port-forward svc/argo-cd-argocd-server 8080:443` on the cluster host, then
   `ssh -L 8080:localhost:8080 ...` through the gateway; or `argocd app get openprism --core` on the host.
 
